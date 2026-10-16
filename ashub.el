@@ -83,7 +83,12 @@
                                                  (or (ashub-session-first-message session)
                                                      "[首条用户消息未知]")) "\n"))
     (add-text-properties start (point) (list 'ashub-session session 'ashub-key key
-                                             'mouse-face 'highlight 'rear-nonsticky t))))
+                                             'rear-nonsticky t))
+    ;; An overlay bounds mouse highlighting even when adjacent rows share a face.
+    (let ((hover (make-overlay start (point) nil t nil)))
+      (overlay-put hover 'ashub-row t)
+      (overlay-put hover 'mouse-face 'highlight)
+      (overlay-put hover 'evaporate t))))
 
 (defun ashub--render ()
   "Redraw the Hub, preserving selected identity and window position."
@@ -119,7 +124,19 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "RET 恢复  / 搜索  a agent  p 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 详情  ! 诊断\n\n")
+    (insert "RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 详情  ! 诊断\n")
+    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n\n")
+    (when ashub--states
+      (maphash
+       (lambda (_key state)
+         (when (and (eq (plist-get state :status) 'error) (null (plist-get state :items)))
+           (insert (propertize
+                    (format "%s 无法加载：%s  [! 完整诊断]\n"
+                            (ashub--source-label (plist-get state :source))
+                            (truncate-string-to-width
+                             (ashub--one-line (car (plist-get state :diagnostics))) 140 nil nil "…"))
+                    'face 'warning))))
+       ashub--states))
     (if (null sessions) (insert "没有符合当前过滤条件的会话；请查看顶部扫描状态及诊断。\n")
       (dolist (name (nreverse order))
         (let* ((start (point)) (folded (gethash name ashub--collapsed))
@@ -219,6 +236,60 @@
 (defun ashub-open ()
   "Resume the exact session at point, through its configured client."
   (interactive) (ashub-open-session (ashub--session-at-point)))
+
+(defun ashub--move-entry (direction)
+  "Move DIRECTION lines at a time to another group or session entry."
+  (let ((origin (point)) (key (get-text-property (point) 'ashub-key)) found)
+    (while (and (not found) (zerop (forward-line direction)))
+      (let ((next (get-text-property (point) 'ashub-key)))
+        (when (and next (not (equal next key))) (setq found t))))
+    (unless found (goto-char origin))
+    found))
+
+(defun ashub-next-entry (&optional count)
+  "Move COUNT entries forward, skipping help and expanded previews."
+  (interactive "p")
+  (let ((count (or count 1)))
+    (dotimes (_ (abs count)) (ashub--move-entry (if (< count 0) -1 1)))))
+
+(defun ashub-previous-entry (&optional count)
+  "Move COUNT entries backward, skipping help and expanded previews."
+  (interactive "p")
+  (ashub-next-entry (- (or count 1))))
+
+(defun ashub-jump-agent (agent)
+  "Filter to AGENT and reveal its first matching session, without scanning.
+Keep the current project and search filters.  Never restore a session."
+  (interactive (list (intern (completing-read "Agent：" '("claude" "codex" "pi" "dsh" "hermes") nil t))))
+  (setq ashub--agent-filter agent)
+  (let ((first (car (ashub--visible-sessions))))
+    (when first (remhash (ashub--group-name first) ashub--collapsed))
+    (ashub--render)
+    (goto-char (point-min))
+    (if first
+        (when-let* ((match (text-property-search-forward 'ashub-key (ashub-session-key first) #'equal)))
+          (goto-char (prop-match-beginning match)))
+      (message "没有符合当前条件的 %s 会话；C 清除过滤，! 查看诊断" agent))))
+
+(defun ashub-jump-claude ()
+  "Filter and jump to Claude sessions."
+  (interactive) (ashub-jump-agent 'claude))
+
+(defun ashub-jump-codex ()
+  "Filter and jump to Codex sessions."
+  (interactive) (ashub-jump-agent 'codex))
+
+(defun ashub-jump-pi ()
+  "Filter and jump to Pi sessions."
+  (interactive) (ashub-jump-agent 'pi))
+
+(defun ashub-jump-dsh ()
+  "Filter and jump to DSH sessions."
+  (interactive) (ashub-jump-agent 'dsh))
+
+(defun ashub-jump-hermes ()
+  "Filter and jump to Hermes sessions."
+  (interactive) (ashub-jump-agent 'hermes))
 
 (defun ashub-toggle-group ()
   "Collapse or expand point's group."
@@ -339,7 +410,10 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (dolist (entry '(("RET" . ashub-open) ("/" . ashub-search) ("a" . ashub-filter-agent)
-                     ("p" . ashub-filter-project) ("c" . ashub-change-grouping)
+                     ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
+                     ("o" . ashub-filter-project) ("c" . ashub-change-grouping)
+                     ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)
+                     ("4" . ashub-jump-dsh) ("5" . ashub-jump-hermes)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
                      ("e" . ashub-toggle-preview) ("d" . ashub-details)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)

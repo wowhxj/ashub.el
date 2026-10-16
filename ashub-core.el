@@ -31,7 +31,7 @@ scan/open functions rather than mutating the client's global transport."
 (defcustom ashub-python-program "python3" "Python 3.9+ for local background scans."
   :type 'string)
 (defcustom ashub-scan-timeout 120 "Maximum seconds per source scan." :type 'number)
-(defcustom ashub-group-by 'agent "Initial grouping: agent or project."
+(defcustom ashub-group-by 'project "Initial grouping: project or agent."
   :type '(choice (const agent) (const project)))
 (defcustom ashub-terminal-open-function nil
   "Optional replacement for ghostel restore.

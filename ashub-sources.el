@@ -133,11 +133,19 @@
           (when (process-live-p process) (delete-process process))
           (cleanup))))))
 
+(defun ashub--require-client-api (feature function package)
+  "Load FEATURE and require FUNCTION from the optional client PACKAGE."
+  (require feature nil t)
+  (unless (fboundp function)
+    (let ((file (or (car (seq-find (lambda (entry) (member (cons 'provide feature) (cdr entry)))
+                                   load-history))
+                    (locate-library (symbol-name feature)) "library not found")))
+      (error "Missing %s (%s). Install/update %s with M-x package-vc-upgrade, then restart Emacs after ending active chats; Hub will not replace loaded clients"
+             function file package))))
+
 (defun ashub--scan-pi (source callback on-error)
   "Enumerate Pi SOURCE through its public API using CALLBACK and ON-ERROR."
-  (require 'emacs-pi-history nil t)
-  (unless (fboundp 'emacs-pi-list-sessions)
-    (error "Missing emacs-pi-list-sessions; load the API-capable emacs-pi version"))
+  (ashub--require-client-api 'emacs-pi-history 'emacs-pi-list-sessions 'emacs-pi)
   (emacs-pi-list-sessions
    (lambda (result)
      (condition-case err
@@ -167,9 +175,7 @@
 
 (defun ashub--scan-dsh (source callback on-error)
   "Enumerate DSH SOURCE through its API using CALLBACK and ON-ERROR."
-  (require 'emacs-dsh nil t)
-  (unless (fboundp 'emacs-dsh-list-sessions)
-    (error "Missing emacs-dsh-list-sessions; load the API-capable emacs-dsh version"))
+  (ashub--require-client-api 'emacs-dsh 'emacs-dsh-list-sessions 'emacs-dsh)
   (unless (equal (plist-get source :root) "configured-host")
     (error "Additional DSH Hosts need explicit :scan-function and :open-function"))
   (emacs-dsh-list-sessions
