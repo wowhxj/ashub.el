@@ -1,0 +1,5 @@
+*.elc
+*~
+ashub-autoloads.el
+__pycache__/
+.pytest_cache/
