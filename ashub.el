@@ -84,11 +84,16 @@
                                                      "[首条用户消息未知]")) "\n"))
     (add-text-properties start (point) (list 'ashub-session session 'ashub-key key
                                              'rear-nonsticky t))
-    ;; An overlay bounds mouse highlighting even when adjacent rows share a face.
-    (let ((hover (make-overlay start (point) nil t nil)))
-      (overlay-put hover 'ashub-row t)
-      (overlay-put hover 'mouse-face 'highlight)
-      (overlay-put hover 'evaporate t))))
+    ;; Exclude every newline: highlighting it can paint the next line's margin.
+    (let ((end (point)))
+      (save-excursion
+        (goto-char start)
+        (while (< (point) end)
+          (let ((hover (make-overlay (point) (line-end-position) nil t nil)))
+            (overlay-put hover 'ashub-row t)
+            (overlay-put hover 'mouse-face 'highlight)
+            (overlay-put hover 'evaporate t))
+          (forward-line 1))))))
 
 (defun ashub--render ()
   "Redraw the Hub, preserving selected identity and window position."
