@@ -3,3 +3,10 @@
 ashub-autoloads.el
 __pycache__/
 .pytest_cache/
+
+# Local working notes; keep public documentation in README*.md.
+/ACCEPTANCE.zh-CN.md
+/CLIENT-API-PLAN.zh-CN.md
+/IMPLEMENTATION-STATUS.zh-CN.md
+/REQUIREMENTS.zh-CN.md
+/TECHNICAL-SURVEY.zh-CN.md

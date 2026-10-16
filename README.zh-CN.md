@@ -1,0 +1,74 @@
+# ashub — Agent Session Hub
+
+[English](README.md) | 简体中文
+
+在一个 Emacs buffer 中浏览和恢复编程智能体的历史会话。支持 **Claude Code、Codex、Pi、DeepSeek Harness 和 Hermes**，复用现有客户端，不另做一套聊天界面。
+
+## 功能
+
+- 默认按项目分组，展示可用的最近交互时间和首条消息预览。
+- 按 agent、完整会话 ID、项目路径或首条用户消息搜索。
+- 键盘导航、agent 快捷定位、分组折叠和会话详情。
+- 异步加载历史，单独报告各数据源的问题。
+
+浏览列表不会恢复会话或发送消息。只有在会话行上按 `RET` 才会恢复指定会话。
+
+## 依赖
+
+- Emacs **29.1+**。下面的 `use-package :vc` 配置需要 Emacs **30+**。
+- Claude、Codex、Hermes 历史扫描需要 Python **3.9+**，无需额外 Python 包。
+- Pi、DeepSeek Harness 需要提供公开会话枚举和恢复 API 的新版 [emacs-pi](https://github.com/wowhxj/emacs-pi)、[emacs-dsh](https://github.com/wowhxj/emacs-dsh)。
+- Claude、Codex、Hermes 恢复需要安装好原生模块的 `ghostel`，以及 Emacs `PATH` 中可找到的对应 CLI。
+
+只需为自己使用的 agent 配置相应可选依赖。
+
+## 安装
+
+```elisp
+(use-package ashub
+  :vc (:url "https://github.com/wowhxj/ashub.el"
+       :branch "main"
+       :rev :newest)
+  :commands ashub
+  :bind ("C-c h" . ashub))
+```
+
+保留现有客户端配置。如果 emacs-dsh 要连接已经运行的 Desktop Host：
+
+```elisp
+(setq emacs-dsh-connection-mode 'desktop)
+```
+
+也可以克隆仓库后从本地加载：
+
+```elisp
+(add-to-list 'load-path "/path/to/ashub.el")
+(require 'ashub)
+```
+
+## 使用
+
+运行 `M-x ashub`；采用上面的配置后，也可按 `C-c h`。
+
+| 按键 | 操作 |
+| --- | --- |
+| `n` / `p` | 下一／上一条目 |
+| `RET` | 恢复当前会话 |
+| `/` | 搜索 |
+| `a` / `o` | 按 agent／项目筛选 |
+| `1`–`5` | 筛选并定位 Claude／Codex／Pi／DSH／Hermes |
+| `C` | 清除全部搜索和筛选 |
+| `c` | 切换项目／agent 分组 |
+| `TAB` | 折叠或展开分组 |
+| `e` / `d` | 展开首条消息／查看详情 |
+| `w` / `W` | 复制完整会话 ID／项目路径 |
+| `g` / `!` | 刷新／查看诊断 |
+| `q` | 关闭 Hub，不停止聊天 buffer |
+
+默认按项目分组。agent 快捷键保留现有项目和搜索筛选，按 `C` 返回完整列表。会话没有可用工作目录时，恢复前会要求选择一个目录。
+
+## 常见问题
+
+Pi 或 DSH 没有显示时，按 `!` 查看原因，并确认当前加载的客户端提供 `emacs-pi-list-sessions` 或 `emacs-dsh-list-sessions`。VC 安装的包可通过 `M-x package-vc-upgrade` 更新；结束活动聊天后重启 Emacs，才能加载新代码。
+
+当前为开发版。部分历史不提供原始首条消息或可信交互时间，这些字段会保留为未知。已归档会话不能直接从 Hub 恢复。
