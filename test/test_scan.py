@@ -73,6 +73,7 @@ class ScannerTests(unittest.TestCase):
         items, errors = self.capture(scan.claude)
         self.assertTrue(errors)
         self.assertEqual(items[0]["empty"], "unknown")
+        self.assertTrue(all(error["category"] == "read" for error in errors))
 
     def test_claude_conflicting_ids_rejected(self):
         self.log(self.root / "projects/p/a.jsonl", [self.claude_event(),
@@ -163,6 +164,7 @@ class ScannerTests(unittest.TestCase):
         self.assertIsNone(items[0]["last_active"])
         self.assertEqual(items[0]["empty"], "unknown")
         self.assertTrue(items[0]["archived"])
+        self.assertTrue(all(error["category"] == "metadata" for error in errors))
 
     def hermes_db(self, content, cwd=None, source="telegram", config="{}"):
         connection = sqlite3.connect(self.root / "state.db")

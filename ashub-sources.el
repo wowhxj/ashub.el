@@ -84,8 +84,11 @@
                                 (condition-case bad
                                     (push (ashub--json-session source (plist-get value :item)) items)
                                   (error (push (error-message-string bad) diagnostics))))
-                               ("diagnostic" (push (format "%s: %s" (plist-get value :path)
-                                                           (plist-get value :message)) diagnostics))
+                               ("diagnostic"
+                                (push (list :kind (if (equal (plist-get value :category) "metadata")
+                                                       'metadata 'read)
+                                            :path (plist-get value :path)
+                                            :message (plist-get value :message)) diagnostics))
                                ("fatal" (setq fatal (plist-get value :message)))
                                ("done" (setq done t))
                                (_ (error "Unknown scanner protocol record"))))
@@ -181,7 +184,7 @@
   (emacs-dsh-list-sessions
    (lambda (result)
      (condition-case err
-         (let (items diagnostics missing)
+         (let (items diagnostics (missing-first 0) (missing-time 0))
            (let ((identity (plist-get result :source)))
              (unless (and (listp identity) (= (length identity) 3)
                           (stringp (car identity)) (stringp (cadr identity))
@@ -193,12 +196,19 @@
                         (cwd (alist-get 'cwd raw))
                         (first (alist-get 'firstUserMessage raw))
                         (last (ashub--seconds (alist-get 'lastInteractionAt raw)))
-                        (count (alist-get 'userMessageCount raw)))
+                        (count (alist-get 'userMessageCount raw))
+                        (values (alist-get 'values (alist-get 'projections raw)))
+                        (outline (alist-get 'turnOutline values))
+                        (turn (and (or (listp outline) (vectorp outline))
+                                   (> (length outline) 0) (elt outline 0)))
+                        (prompt (and (listp turn) (alist-get 'prompt turn)))
+                        (title (alist-get 'title values)))
                    (unless (and (stringp id) (not (string-empty-p id)))
                      (error "DSH item missing full sessionId"))
                    (unless (or (null cwd) (stringp cwd)) (error "Invalid DSH cwd field"))
                    ;; updatedAt and generated titles are not message timestamps/text.
-                   (unless (and (stringp first) last) (setq missing t))
+                   (unless (stringp first) (cl-incf missing-first))
+                   (unless last (cl-incf missing-time))
                    (push (ashub-session-create
                           :agent 'dsh :source source :id id :cwd cwd
                           :first-message (and (stringp first) first) :last-active last
@@ -207,10 +217,16 @@
                           :archived (if (assq 'archived raw)
                                         (ashub--state-value (alist-get 'archived raw)) 'unknown)
                           :origin (alist-get 'origin raw)
-                          :metadata (list :native-source (plist-get result :source))) items))
+                          :title (and (stringp title) (not (string-empty-p (string-trim title))) title)
+                          :metadata (list :native-source (plist-get result :source)
+                                          :prompt-preview (and (stringp prompt)
+                                                               (not (string-empty-p (string-trim prompt))) prompt)
+                                          :updated-at (ashub--seconds (alist-get 'updatedAt raw)))) items))
                (error (push (error-message-string bad) diagnostics))))
-           (when missing
-             (push "DSH Host omitted explicit first-user-message/interaction time; fields remain unknown (titles/updatedAt are not substitutes)" diagnostics))
+           (when (or (> missing-first 0) (> missing-time 0))
+             (push (list :kind 'metadata
+                         :message (format "DSH: %d 条未提供原始首条消息，%d 条未提供可信交互时间；已有消息预览/标题单独标注，更新时间不冒充交互时间"
+                                          missing-first missing-time)) diagnostics))
            (funcall callback (nreverse items) (nreverse diagnostics)))
        (error (funcall on-error (error-message-string err)))))
    :on-error on-error))

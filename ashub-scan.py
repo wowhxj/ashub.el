@@ -21,8 +21,8 @@ def emit(kind, **values):
     print(json.dumps(dict(kind=kind, **values), ensure_ascii=True), flush=True)
 
 
-def diagnostic(path, message):
-    emit("diagnostic", path=str(path), message=str(message))
+def diagnostic(path, message, category="read"):
+    emit("diagnostic", path=str(path), message=str(message), category=category)
 
 
 def timestamp(value):
@@ -299,7 +299,7 @@ def codex(root):
                     messages.last = rollout.last
                     messages.time_source = "message"
             elif messages is None:
-                diagnostic(row["id"], "No readable rollout or complete thread history; metadata only")
+                diagnostic(row["id"], "No readable rollout or complete thread history; metadata only", category="metadata")
             if messages:
                 messages.apply(item)
             # A state index's first_user_message is an explicit message field, not its generated title.

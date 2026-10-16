@@ -60,7 +60,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above.
 | `C` | Clear all search and filters |
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
-| `e` / `d` | Expand the first message / show session details |
+| `e` / `d` | Expand the message or preview / show session details |
 | `w` / `W` | Copy the full session ID / project path |
 | `g` / `!` | Refresh / show diagnostics |
 | `q` | Close the Hub without stopping chat buffers |
@@ -70,5 +70,9 @@ Project grouping is the default. Agent shortcuts preserve the current project an
 ## Troubleshooting
 
 If Pi or DSH is missing, press `!` and check that the loaded client provides `emacs-pi-list-sessions` or `emacs-dsh-list-sessions`. After upgrading VC-installed packages with `M-x package-vc-upgrade`, finish active chats and restart Emacs to load the new code.
+
+`[预览]` marks a projected message preview; `[标题]` marks a title, not the original message. DSH previews use the same `turnOutline` data as emacs-dsh. Source update times are shown in details, not substituted for interaction times.
+
+The header distinguishes source failures, read issues, and missing fields. Missing fields do not mean sessions were lost; displayed counts also reflect search filters and hidden internal, empty, or archived sessions. Press `!` for details.
 
 This is a development version. Some histories do not provide the original first message or a reliable interaction time; these fields remain unknown. Archived sessions cannot be restored directly from the Hub.

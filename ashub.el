@@ -63,6 +63,14 @@
     (or (eq (plist-get state :status) 'stale)
         (member (ashub-session-key session) (plist-get state :stale-keys)))))
 
+(defun ashub--preview-text (session)
+  "Return labelled display text without treating projections as raw messages."
+  (cond ((ashub-session-first-message session) (ashub-session-first-message session))
+        ((plist-get (ashub-session-metadata session) :prompt-preview)
+         (concat "[预览] " (plist-get (ashub-session-metadata session) :prompt-preview)))
+        ((ashub-session-title session) (concat "[标题] " (ashub-session-title session)))
+        (t "[首条用户消息未知]")))
+
 (defun ashub--insert-row (session sessions)
   "Insert single-line table row for SESSION among SESSIONS."
   (let* ((start (point)) (key (ashub-session-key session))
@@ -71,7 +79,7 @@
          (time (if-let* ((seconds (ashub-session-last-active session)))
                    (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds)) "时间未知"))
          (project-width (max 10 (min 28 (/ width 5))))
-         (preview (ashub--one-line (or (ashub-session-first-message session) "[首条用户消息未知]")))
+         (preview (ashub--one-line (ashub--preview-text session)))
          (prefix (format (format "  %%-7s %%-16s %%-%ds %%-%ds " (max 8 (length id)) project-width)
                          (ashub-session-agent session) time id
                          (ashub--middle (ashub-session-project session) project-width))))
@@ -80,8 +88,7 @@
             (if (ashub--stale-p session) " [旧]" "") "\n")
     (when (gethash key ashub--expanded)
       (insert "    ┊ " (replace-regexp-in-string "\n" "\n    ┊ "
-                                                 (or (ashub-session-first-message session)
-                                                     "[首条用户消息未知]")) "\n"))
+                                                 (ashub--preview-text session)) "\n"))
     (add-text-properties start (point) (list 'ashub-session session 'ashub-key key
                                              'rear-nonsticky t))
     ;; Exclude every newline: highlighting it can paint the next line's margin.
@@ -102,7 +109,7 @@
          (window (get-buffer-window (current-buffer)))
          (window-start-key (and window (get-text-property (window-start window) 'ashub-key)))
          (sessions (ashub--visible-sessions))
-         (groups (make-hash-table :test #'equal)) order pending problems
+         (groups (make-hash-table :test #'equal)) order pending failures reads notes
          (inhibit-read-only t))
     (dolist (session sessions)
       (let ((name (ashub--group-name session)))
@@ -111,19 +118,29 @@
     (when ashub--states
       (maphash
        (lambda (_key state)
-         (let ((status (plist-get state :status)))
-           (when (eq status 'loading) (push (ashub--source-label (plist-get state :source)) pending))
-           (when (memq status '(error stale partial))
-             (push (format "%s%s" (ashub--source-label (plist-get state :source))
-                           (if (eq status 'stale) "（旧数据／刷新失败）" "")) problems))))
+         (let* ((status (plist-get state :status))
+                (source (plist-get state :source))
+                (label (ashub--source-label source))
+                (diagnostics (plist-get state :diagnostics))
+                (metadata-count (cl-count-if (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) diagnostics))
+                (read-count (- (length diagnostics) metadata-count)))
+           (when (eq status 'loading) (push label pending))
+           (if (memq status '(error stale))
+               (push (concat label (if (eq status 'stale) "（旧数据／刷新失败）" "")) failures)
+             (when (> read-count 0) (push (format "%s（%d项）" label read-count) reads)))
+           (when (> metadata-count 0) (push (format "%s（%d项）" label metadata-count) notes))))
        ashub--states))
-    (setq ashub--status
-          (format "ashub  %d/%d 条  %s%s"
-                  (length sessions) (length (ashub--all-sessions))
-                  (if pending (format "扫描中：%s  " (string-join (nreverse pending) ", ")) "")
-                  (if problems (format "结果不完整：%s  [! 诊断]" (string-join (nreverse problems) ", ")) "")))
+    (let ((total (length (ashub--all-sessions))))
+      (setq ashub--status
+            (concat (format "ashub  显示 %d/已载入 %d（过滤/隐藏 %d）"
+                            (length sessions) total (- total (length sessions)))
+                    (if pending (format "  扫描中：%s" (string-join (nreverse pending) ", ")) "")
+                    (if failures (format "  来源失败：%s" (string-join (nreverse failures) ", ")) "")
+                    (if reads (format "  读取异常：%s" (string-join (nreverse reads) ", ")) "")
+                    (if notes (format "  字段缺失：%s" (string-join (nreverse notes) ", ")) "")
+                    (if (or failures reads notes) "  [! 诊断]" ""))))
     (setq header-line-format `(:eval (propertize ashub--status 'face
-                                                 ',(if problems 'warning 'mode-line))))
+                                                 ',(if (or failures reads) 'warning 'mode-line))))
     (erase-buffer)
     (insert (propertize "Agent Session Hub\n" 'face 'bold))
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
@@ -139,7 +156,7 @@
                     (format "%s 无法加载：%s  [! 完整诊断]\n"
                             (ashub--source-label (plist-get state :source))
                             (truncate-string-to-width
-                             (ashub--one-line (car (plist-get state :diagnostics))) 140 nil nil "…"))
+                             (ashub--one-line (ashub-diagnostic-text (car (plist-get state :diagnostics)))) 140 nil nil "…"))
                     'face 'warning))))
        ashub--states))
     (if (null sessions) (insert "没有符合当前过滤条件的会话；请查看顶部扫描状态及诊断。\n")
@@ -187,14 +204,16 @@
             (error "Adapter returned a session from another source"))
           (unless (gethash (ashub-session-key session) seen)
             (puthash (ashub-session-key session) t seen) (push session unique)))
-        (when diagnostics
+        (when (seq-some (lambda (note) (eq (ashub-diagnostic-kind note) 'read)) diagnostics)
           (dolist (session old)
             (unless (gethash (ashub-session-key session) seen)
               (push (ashub-session-key session) (plist-get state :stale-keys))
               (push session unique))))
         (setf (plist-get state :items) (nreverse unique)
               (plist-get state :loaded) t
-              (plist-get state :status) (if diagnostics 'partial 'ok)
+              (plist-get state :status) (cond ((null diagnostics) 'ok)
+                                               ((seq-some (lambda (note) (eq (ashub-diagnostic-kind note) 'read)) diagnostics) 'partial)
+                                               (t 'metadata))
               (plist-get state :diagnostics) diagnostics)))
     (puthash key state ashub--states)
     (ashub--render)))
@@ -330,7 +349,7 @@ Keep the current project and search filters.  Never restore a session."
   (ashub--render))
 
 (defun ashub-search ()
-  "Live literal search of agent, full ID, cwd and full first user message.
+  "Live literal search of agent, full ID, cwd and displayed message/preview.
 Cancel restores the previous search.  No new scan or restore is triggered."
   (interactive)
   (let ((hub (current-buffer)) (old ashub--query) accepted)
@@ -356,7 +375,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   (ashub--render))
 
 (defun ashub-toggle-preview ()
-  "Toggle current session's full first-message preview."
+  "Toggle the selected message/preview/title, preserving its origin label."
   (interactive)
   (let ((key (ashub-session-key (ashub--session-at-point))))
     (puthash key (not (gethash key ashub--expanded)) ashub--expanded)
@@ -365,7 +384,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 (defun ashub-details ()
   "Display full identity and known metadata, not a complete transcript."
   (interactive)
-  (let ((session (ashub--session-at-point)))
+  (let* ((session (ashub--session-at-point)) (stale (ashub--stale-p session)))
     (with-help-window "*ashub details*"
       (princ (format "Agent: %s\nSession ID: %s\nSource: %s\nStorage path: %s\nProject: %s\n"
                      (ashub-session-agent session) (ashub-session-id session)
@@ -379,11 +398,18 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                      (ashub-session-origin session) (ashub-session-last-active session)
                      (ashub-session-time-source session) (ashub-session-internal session)
                      (ashub-session-empty session) (ashub-session-archived session)
-                     (if (ashub--stale-p session) "stale; refresh failed" "see source status")))
+                     (if stale "stale; refresh failed" "see source status")))
       (when (ashub-session-title session)
         (princ (format "Title (not a raw first message): %s\n" (ashub-session-title session))))
       (princ (format "\nFirst user message:\n%s\n"
-                     (or (ashub-session-first-message session) "[unknown]"))))))
+                     (or (ashub-session-first-message session) "[unknown]")))
+      (when (and (not (ashub-session-first-message session))
+                 (plist-get (ashub-session-metadata session) :prompt-preview))
+        (princ (format "\nMessage preview (turnOutline; may be truncated):\n%s\n"
+                       (plist-get (ashub-session-metadata session) :prompt-preview))))
+      (when-let* ((updated (plist-get (ashub-session-metadata session) :updated-at)))
+        (princ (format "\nSource updated at (not interaction time): %s\n"
+                       (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time updated))))))))
 
 (defun ashub-copy-id ()
   "Copy the full selected session ID."
@@ -396,15 +422,25 @@ Cancel restores the previous search.  No new scan or restore is triggered."
     (unless cwd (user-error "该会话未记录项目目录")) (kill-new cwd) (message "已复制项目路径")))
 
 (defun ashub-diagnostics ()
-  "Show per-source availability and partial-scan diagnostics."
+  "Separate source failures, read issues and missing metadata."
   (interactive)
-  (let ((states ashub--states))
+  (let ((states ashub--states) (visible (length (ashub--visible-sessions)))
+        (total (length (ashub--all-sessions))))
     (with-help-window "*ashub diagnostics*"
+      (princ (format "显示 %d/已载入 %d；过滤/隐藏 %d。\n" visible total (- total visible)))
+      (princ "字段缺失：会话已载入，但部分原始字段不可用；预览/标题会单独标注。\n")
+      (princ "读取异常：部分文件或消息未完整载入。来源失败：扫描失败，旧数据可能保留。\n")
+      (princ "过滤/隐藏包括当前搜索条件，以及默认排除的内部、空和归档会话。\n\n")
       (maphash (lambda (_key state)
                  (princ (format "%s\nStatus: %s; retained records: %d\n"
                                 (ashub--source-label (plist-get state :source))
                                 (plist-get state :status) (length (plist-get state :items))))
-                 (dolist (error (plist-get state :diagnostics)) (princ (format "  %s\n" error)))
+                 (dolist (note (plist-get state :diagnostics))
+                   (princ (format "  [%s] %s\n"
+                                  (cond ((memq (plist-get state :status) '(error stale)) "来源失败")
+                                        ((eq (ashub-diagnostic-kind note) 'metadata) "字段缺失")
+                                        (t "读取异常"))
+                                  (ashub-diagnostic-text note))))
                  (princ "\n")) states))))
 
 (defun ashub-quit ()

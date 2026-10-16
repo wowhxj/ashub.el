@@ -123,6 +123,23 @@ Conflicting restore configuration for the same source is an error."
     (cl-every (lambda (word) (string-match-p (regexp-quote (downcase word)) haystack))
               (split-string (or query "") "[[:space:]]+" t))))
 
+(defun ashub-session-preview (session)
+  "Return SESSION's original message, projected prompt, or labelled title."
+  (or (ashub-session-first-message session)
+      (plist-get (ashub-session-metadata session) :prompt-preview)
+      (ashub-session-title session)))
+
+(defun ashub-diagnostic-kind (diagnostic)
+  "Classify DIAGNOSTIC; legacy strings and untyped records are read issues."
+  (if (and (listp diagnostic) (eq (plist-get diagnostic :kind) 'metadata))
+      'metadata 'read))
+
+(defun ashub-diagnostic-text (diagnostic)
+  "Render string or structured DIAGNOSTIC without exposing a plist dump."
+  (if (stringp diagnostic) diagnostic
+    (let ((path (plist-get diagnostic :path)) (message (plist-get diagnostic :message)))
+      (if path (format "%s: %s" path message) (format "%s" message)))))
+
 (defun ashub-session-visible-p (session agent project query)
   "Whether SESSION satisfies AGENT, PROJECT, QUERY and visibility settings."
   (and (not (eq (ashub-session-internal session) t))
@@ -132,7 +149,7 @@ Conflicting restore configuration for the same source is an error."
        (ashub--matches-p project (list (ashub-session-cwd session)))
        (ashub--matches-p query
                          (list (ashub-session-agent session) (ashub-session-id session)
-                               (ashub-session-cwd session) (ashub-session-first-message session)))))
+                               (ashub-session-cwd session) (ashub-session-preview session)))))
 
 (defun ashub-sort-sessions (sessions)
   "Return SESSIONS newest first, with unknown interaction times last."

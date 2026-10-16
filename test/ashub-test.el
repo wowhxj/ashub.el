@@ -101,7 +101,7 @@
      (ashub--accept-source key nil nil "unavailable")
      (should (equal (ashub--all-sessions) (list a)))
      (should (ashub--stale-p a))
-     (should (string-match-p "结果不完整" ashub--status))
+     (should (string-match-p "来源失败" ashub--status))
      (should (string-match-p "旧数据／刷新失败" ashub--status))
      (should (string-match-p "\\[旧\\]" (buffer-string))))))
 
@@ -434,13 +434,15 @@
           (with-temp-file script
             (insert "print('{\"kind\":\"item\",\"item\":{\"id\":null}}')\n"
                     "print('{\"kind\":\"item\",\"item\":{\"id\":\"valid\"}}')\n"
+                    "print('{\"kind\":\"diagnostic\",\"category\":\"metadata\",\"path\":\"valid\",\"message\":\"Time unknown\"}')\n"
                     "print('{\"kind\":\"done\"}')\n"))
           (let ((ashub--scanner-file script))
             (ashub--scan-local (ashub-test-source)
                                (lambda (records diagnostics) (setq items records errors diagnostics done t))
                                (lambda (error) (ert-fail error))))
           (ashub-test-wait (lambda () done))
-          (should (= (length items) 1)) (should (= (length errors) 1)))
+          (should (= (length items) 1)) (should (= (length errors) 2))
+          (should (= 1 (cl-count-if (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) errors))))
       (delete-file script))))
 
 (ert-deftest ashub-empty-agent-choice-clears-filter-and-search-can-reset ()
@@ -599,6 +601,106 @@
      (puthash key (list :source source :status 'loading) ashub--states)
      (ashub--accept-source key nil nil "Missing emacs-pi-list-sessions")
      (should (string-match-p "Missing emacs-pi-list-sessions" (buffer-string))))))
+
+(ert-deftest ashub-dsh-outline-preview-is-visible-searchable-and-not-raw ()
+  (let (items diagnostics)
+    (cl-letf (((symbol-function 'emacs-dsh-list-sessions)
+               (lambda (callback &rest _)
+                 (funcall callback
+                          '(:source ("host" "nonce" desktop)
+                            :items (((sessionId . "preview-id") (cwd . "/p")
+                                     (updatedAt . 1900000000)
+                                     (projections . ((values . ((turnOutline . [((prompt . "needle\nsecond"))])
+                                                               (title . "generated")))))))))
+                 #'ignore)))
+      (ashub--scan-dsh '(:agent dsh :root "configured-host")
+                       (lambda (records notes) (setq items records diagnostics notes)) #'ert-fail))
+    (let ((session (car items)))
+      (should-not (ashub-session-first-message session))
+      (should-not (ashub-session-last-active session))
+      (should (equal (ashub-session-preview session) "needle\nsecond"))
+      (should (ashub-session-visible-p session nil nil "needle"))
+      (should (seq-every-p (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) diagnostics))
+      (ashub-test-with-hub
+       (ashub-test-install items diagnostics)
+       (should (string-match-p "\\[预览\\] needle" (buffer-string)))
+       (goto-char (point-min)) (search-forward "preview-") (beginning-of-line)
+       (ashub-toggle-preview)
+       (should (string-match-p "┊ second" (buffer-string)))
+       (save-window-excursion
+         (ashub-details)
+         (with-current-buffer "*ashub details*"
+           (should (string-match-p "First user message:\n\\[unknown\\]" (buffer-string)))
+           (should (string-match-p "Message preview (turnOutline" (buffer-string)))
+           (should (string-match-p "needle\nsecond" (buffer-string)))))))))
+
+(ert-deftest ashub-dsh-original-preview-and-title-are-distinct ()
+  (let (items)
+    (cl-letf (((symbol-function 'emacs-dsh-list-sessions)
+               (lambda (callback &rest _)
+                 (funcall callback
+                          '(:source ("host" "nonce" desktop)
+                            :items (((sessionId . "raw") (firstUserMessage . "original")
+                                     (projections . ((values . ((turnOutline . (((prompt . "outline"))))
+                                                               (title . "generated"))))))
+                                    ((sessionId . "title")
+                                     (projections . ((values . ((title . "title-only"))))))
+                                    ((sessionId . "unknown")
+                                     (projections . ((values . ((turnOutline . [((prompt . "   "))])
+                                                               (title . 42)))))))))
+                 #'ignore)))
+      (ashub--scan-dsh '(:agent dsh :root "configured-host")
+                       (lambda (records _notes) (setq items records)) #'ert-fail))
+    (should (= (length items) 3))
+    (should (equal (ashub-session-preview (nth 0 items)) "original"))
+    (should-not (ashub-session-first-message (nth 1 items)))
+    (should (equal (ashub-session-preview (nth 1 items)) "title-only"))
+    (should-not (ashub-session-preview (nth 2 items)))
+    (ashub-test-with-hub
+     (ashub-test-install items)
+     (should (string-match-p "\\[标题\\] title-only" (buffer-string))))))
+
+(ert-deftest ashub-metadata-notes-do-not-retain-vanished-sessions ()
+  (ashub-test-with-hub
+   (let* ((a (ashub-test-session :id "still-present"))
+          (b (ashub-test-session :id "removed"))
+          (key (ashub-source-key (ashub-session-source a))))
+     (ashub-test-install (list a b))
+     (ashub--accept-source key (list a) '((:kind metadata :message "Time unknown")) nil)
+     (should (equal (ashub--all-sessions) (list a)))
+     (should (eq (plist-get (gethash key ashub--states) :status) 'metadata))
+     (should-not (ashub--stale-p a))
+     (should (string-match-p "字段缺失" ashub--status))
+     (should-not (string-match-p "读取异常\\|来源失败\\|结果不完整" ashub--status)))))
+
+(ert-deftest ashub-status-separates-errors-metadata-and-hidden-records ()
+  (ashub-test-with-hub
+   (let* ((a (ashub-test-session)) (b (ashub-test-session :id "hidden" :internal t))
+          (pi-source (ashub-test-source 'pi))
+          (dsh-source '(:agent dsh :root "configured-host")))
+     (ashub-test-install (list a b) '((:kind metadata :message "First message unknown")))
+     (ashub-test-install (list (ashub-test-session :agent 'pi :source pi-source))
+                         '((:kind read :path "/broken.jsonl" :message "Missing session header")))
+     (puthash (ashub-source-key dsh-source) (list :source dsh-source :status 'loading) ashub--states)
+     (ashub--accept-source (ashub-source-key dsh-source) nil nil "Host unavailable")
+     (should (string-match-p "显示 2/已载入 3" ashub--status))
+     (should (string-match-p "过滤/隐藏 1" ashub--status))
+     (should (string-match-p "字段缺失" ashub--status))
+     (should (string-match-p "读取异常" ashub--status))
+     (should (string-match-p "来源失败" ashub--status)))))
+
+(ert-deftest ashub-diagnostics-format-typed-notes-without-plist-dumps ()
+  (ashub-test-with-hub
+   (ashub-test-install (list (ashub-test-session))
+                       '((:kind metadata :message "Time unknown")
+                         (:kind read :path "/file.jsonl" :message "Missing header")))
+   (save-window-excursion
+     (ashub-diagnostics)
+     (with-current-buffer "*ashub diagnostics*"
+       (should (string-match-p "字段缺失" (buffer-string)))
+       (should (string-match-p "读取异常" (buffer-string)))
+       (should (string-match-p "/file.jsonl: Missing header" (buffer-string)))
+       (should-not (string-match-p ":kind\\|:message" (buffer-string)))))))
 
 (provide 'ashub-test)
 ;; Local Variables:
