@@ -11,7 +11,7 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 - Keyboard navigation, agent shortcuts, collapsible groups, and session details.
 - Asynchronous history loading with per-source diagnostics.
 
-Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. A restoring notice appears immediately in the echo area, header, and session row until readiness, failure, or timeout.
+Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. Progress appears immediately in the echo area and header until readiness, failure, or timeout; a session being restored is also marked in its row.
 
 ## Requirements
 
