@@ -923,6 +923,130 @@
      (should-not (string-match-p "时间未知" (buffer-string)))
      (should (string-match-p "日期 \\*：来源更新时间/创建时间" (buffer-string))))))
 
+;;; Session references
+
+(defvar emacs-pi--session)
+
+(defmacro ashub-test-with-reference-directory (&rest body)
+  "Run BODY with a fresh private reference directory."
+  `(let* ((parent (make-temp-file "ashub-ref" t))
+          (ashub-reference-directory (expand-file-name "refs" parent)))
+     (unwind-protect (progn ,@body) (delete-directory parent t))))
+
+(ert-deftest ashub-reference-file-is-private-and-safely-named ()
+  (ashub-test-with-reference-directory
+   (let ((file (ashub-reference-write (ashub-test-session :id "../x y") "汉字")))
+     (should (equal (file-name-directory file) (file-name-as-directory ashub-reference-directory)))
+     (should (equal (file-name-nondirectory file) "claude-.._x_y.md"))
+     (should (= (file-modes file) #o600))
+     (should (= (file-modes ashub-reference-directory) #o700))
+     (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string)) "汉字")))))
+
+(ert-deftest ashub-reference-exports-local-history-through-scanner ()
+  (let* ((root (make-temp-file "ashub-claude" t))
+         (log (expand-file-name "projects/p/sid.jsonl" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory log) t)
+          (with-temp-file log
+            (insert "{\"type\":\"user\",\"sessionId\":\"sid\",\"cwd\":\"/w\","
+                    "\"message\":{\"role\":\"user\",\"content\":\"引用这个\"}}\n"))
+          (let ((text (ashub-reference-markdown
+                       (ashub-test-session :id "sid" :source (ashub-test-source 'claude root)))))
+            (should (string-match-p "- Session ID: sid" text))
+            (should (string-match-p "## User\n\n引用这个" text))))
+      (delete-directory root t))))
+
+(ert-deftest ashub-reference-scanner-failure-is-a-user-error ()
+  (let ((root (make-temp-file "ashub-claude" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "projects" root))
+          (should-error (ashub-reference-markdown
+                         (ashub-test-session :id "missing" :source (ashub-test-source 'claude root)))
+                        :type 'user-error))
+      (delete-directory root t))))
+
+(ert-deftest ashub-reference-pi-uses-client-excerpt ()
+  (cl-letf (((symbol-function 'emacs-pi-history-session-excerpt)
+             (lambda (record limit)
+               (should (equal (plist-get record :path) "/pi/s.jsonl"))
+               (should (= limit ashub-reference-max-chars))
+               "User: a\n\nPi: b")))
+    (let ((text (ashub-reference-markdown
+                 (ashub-test-session :agent 'pi :id "p" :path "/pi/s.jsonl"
+                                     :source (ashub-test-source 'pi)))))
+      (should (string-match-p "- Agent: pi" text))
+      (should (string-match-p "User: a\n\nPi: b" text)))))
+
+(ert-deftest ashub-reference-dsh-uses-client-api-and-notes-limit ()
+  (let ((ashub-reference-dsh-max-messages 9))
+    (cl-letf (((symbol-function 'ashub--dsh-source-check) #'ignore)
+              ((symbol-function 'emacs-dsh-read-session)
+               (lambda (id on-success &rest args)
+                 (should (equal id "d"))
+                 (should (= (plist-get args :max-messages) 9))
+                 (run-at-time 0 nil on-success
+                              (list :max-messages 9
+                                    :messages '((:role user :text "问" :time 1767225600000)
+                                                (:role assistant :text "答" :time nil))))
+                 #'ignore)))
+      (let ((text (ashub-reference-markdown
+                   (ashub-test-session :agent 'dsh :id "d"
+                                       :source (list :agent 'dsh :root "configured-host")))))
+        (should (string-match-p "latest 9 DSH messages" text))
+        (should (string-match-p "## User · .*\n\n问" text))
+        (should (string-match-p "## Assistant\n\n答" text))))))
+
+(ert-deftest ashub-reference-dsh-failure-is-a-user-error ()
+  (cl-letf (((symbol-function 'ashub--dsh-source-check) #'ignore)
+            ((symbol-function 'emacs-dsh-read-session)
+             (lambda (_id _on-success &rest args)
+               (funcall (plist-get args :on-error) "Host unavailable")
+               #'ignore)))
+    (should-error (ashub-reference-markdown
+                   (ashub-test-session :agent 'dsh :id "d"
+                                       :source (list :agent 'dsh :root "configured-host")))
+                  :type 'user-error)))
+
+(ert-deftest ashub-reference-picker-lists-visible-sessions-newest-first ()
+  (let ((buffer (get-buffer-create "*ashub*")) offered)
+    (unwind-protect
+        (with-current-buffer buffer
+          (ashub-mode)
+          (let ((old (ashub-test-session :id "old-session" :last-active 1 :first-message "old"))
+                (new (ashub-test-session :id "new-session" :last-active 2 :first-message "new"))
+                (hidden (ashub-test-session :id "sub-agent" :internal t)))
+            (ashub-test-install (list old new hidden))
+            (cl-letf (((symbol-function 'ashub-refresh) (lambda () (ert-fail "Loaded Hub rescanned")))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt table &rest _)
+                         (setq offered (all-completions "" table))
+                         (should (eq (completion-metadata-get
+                                      (completion-metadata "" table nil) 'display-sort-function)
+                                     #'identity))
+                         (cadr offered))))
+              (should (eq (ashub-reference-read-session) old))
+              (should (= (length offered) 2))
+              (should (string-match-p "new" (car offered))))))
+      (kill-buffer buffer))))
+
+(ert-deftest ashub-insert-reference-targets-each-client ()
+  (dolist (case '((ghostel "@/r.md ") (pi "/r.md") (dsh "/r.md") (other "/r.md")))
+    (with-temp-buffer
+      (let (inserted)
+        (pcase (car case)
+          ('ghostel (setq major-mode 'ghostel-mode))
+          ('pi (setq-local emacs-pi--session t))
+          ('dsh (setq major-mode 'emacs-dsh-chat-mode)))
+        (cl-letf (((symbol-function 'ashub-reference-provider) (lambda (&optional _) "/r.md"))
+                  ((symbol-function 'ghostel-paste-string) (lambda (s) (setq inserted s)))
+                  ((symbol-function 'emacs-pi-insert-file) (lambda (s) (setq inserted s)))
+                  ((symbol-function 'emacs-dsh-insert-file) (lambda (s) (setq inserted s))))
+          (ashub-insert-reference)
+          (should (equal (if (eq (car case) 'other) (buffer-string) inserted)
+                         (cadr case))))))))
+
 (provide 'ashub-test)
 ;; Local Variables:
 ;; indent-tabs-mode: nil

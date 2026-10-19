@@ -70,6 +70,18 @@
 
 默认按项目分组。agent 快捷键保留现有项目和搜索筛选，按 `C` 返回完整列表。会话没有可用工作目录时，恢复前会要求选择一个目录。
 
+## 引用其他会话
+
+在任一 agent 里引用另一个 agent 的历史会话，继续相关任务。按键需自行绑定：
+
+```elisp
+(global-set-key (kbd "C-c @") #'ashub-insert-reference)
+```
+
+按 `C-c @` 后，从所有 agent 的会话中（最新的在前）选一个。ashub 把它的用户和助手文本（不含工具调用）导出为 `~/.cache/ashub/refs/` 下的私有 Markdown 文件，再往当前输入区插入文件引用：ghostel 终端（Claude、Codex、Hermes）粘贴 `@路径`，Pi 和 DSH 插入各自的 @文件引用。在 Pi、DSH 聊天里也可以输入 `@ashub` 后按 `TAB`；这需要客户端提供 `emacs-pi-reference-providers` / `emacs-dsh-reference-providers`，引用 DSH 会话还需要 `emacs-dsh-read-session`。提交前不会发送任何内容。
+
+超长会话保留开头和结尾、省略中间（`ashub-reference-max-chars`）。DSH 引用最多包含最近 `ashub-reference-dsh-max-messages` 条消息，因为 Host 不提供更早的分页。也可以脱离 Emacs 导出：`python3 ashub-scan.py export claude ~/.claude SESSION-ID`。
+
 ## 常见问题
 
 Pi 或 DSH 没有显示时，按 `!` 查看原因，并确认当前加载的客户端提供 `emacs-pi-list-sessions` 或 `emacs-dsh-list-sessions`。VC 安装的包可通过 `M-x package-vc-upgrade` 更新；结束活动聊天后重启 Emacs，才能加载新代码。

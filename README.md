@@ -70,6 +70,18 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 Project grouping is the default. Agent shortcuts preserve the current project and search filters; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
+## Referencing another session
+
+Continue work from any agent's saved session inside another agent. Bind the command yourself:
+
+```elisp
+(global-set-key (kbd "C-c @") #'ashub-insert-reference)
+```
+
+`C-c @` lists sessions from all agents, newest first, exports the chosen session's user and assistant text (tool calls omitted) to a private Markdown file in `~/.cache/ashub/refs/`, and inserts a file reference into the current draft: `@path` pasted into ghostel terminals (Claude, Codex, Hermes), an @file reference in Pi and DSH. In Pi and DSH chats you can also type `@ashub` and press `TAB`; this needs clients that provide `emacs-pi-reference-providers` / `emacs-dsh-reference-providers`, and DSH sessions need `emacs-dsh-read-session`. Nothing is sent until you submit.
+
+Very long sessions keep their beginning and end and omit the middle (`ashub-reference-max-chars`). DSH references include at most the latest `ashub-reference-dsh-max-messages` messages because the Host offers no older pages. The same export is available without Emacs: `python3 ashub-scan.py export claude ~/.claude SESSION-ID`.
+
 ## Troubleshooting
 
 If Pi or DSH is missing, press `!` and check that the loaded client provides `emacs-pi-list-sessions` or `emacs-dsh-list-sessions`. After upgrading VC-installed packages with `M-x package-vc-upgrade`, finish active chats and restart Emacs to load the new code.

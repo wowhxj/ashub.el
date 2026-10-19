@@ -526,6 +526,8 @@ The q command restores this frame's previous window layout."
     (ashub-refresh)))
 
 (provide 'ashub)
+;; After provide: ashub-reference uses the Hub lazily, without a load cycle.
+(require 'ashub-reference)
 ;; Local Variables:
 ;; indent-tabs-mode: nil
 ;; End:

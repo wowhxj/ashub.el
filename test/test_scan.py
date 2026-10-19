@@ -261,6 +261,115 @@ class ScannerTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.capture(scan.claude)
 
+    def export(self, agent, session_id, max_chars=100_000):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            text = scan.export(agent, self.root, session_id, max_chars)
+        self.assertEqual(out.getvalue(), "", "export must not print protocol records")
+        return text
+
+    def test_export_claude_keeps_text_turns_and_omits_tools(self):
+        self.log(self.root / "projects/p/session-a.jsonl", [
+            self.claude_event(content="question one"),
+            self.claude_event("assistant", [dict(type="text", text="answer one"),
+                                            dict(type="tool_use", name="Bash", input={})]),
+            self.claude_event(content=[dict(type="tool_result", content="tool output")]),
+            self.claude_event("assistant", [dict(type="tool_use", name="Read", input={})]),
+            self.claude_event(content="question two")])
+        self.log(self.root / "projects/p/other.jsonl", [dict(self.claude_event(), sessionId="other")])
+        text = self.export("claude", "session-a")
+        self.assertIn("- Session ID: session-a", text)
+        self.assertIn("- Project: /project", text)
+        self.assertNotIn("tool output", text)
+        self.assertNotIn("Bash", text)
+        self.assertEqual([line for line in text.splitlines() if line.startswith("## ")],
+                         ["## User · " + scan.local_time(scan.timestamp("2026-01-01T00:00:00Z"))] * 1 +
+                         ["## Assistant · " + scan.local_time(scan.timestamp("2026-01-01T00:00:00Z"))] +
+                         ["## User · " + scan.local_time(scan.timestamp("2026-01-01T00:00:00Z"))])
+        self.assertLess(text.index("question one"), text.index("answer one"))
+        self.assertLess(text.index("answer one"), text.index("question two"))
+
+    def test_export_merges_one_reply_split_across_log_events(self):
+        self.log(self.root / "projects/p/session-a.jsonl", [
+            self.claude_event(content="q"),
+            self.claude_event("assistant", [dict(type="text", text="part one")]),
+            self.claude_event("assistant", [dict(type="tool_use", name="Bash", input={})]),
+            self.claude_event("assistant", [dict(type="text", text="part two")])])
+        text = self.export("claude", "session-a")
+        self.assertEqual(text.count("## Assistant"), 1)
+        self.assertIn("part one\n\npart two", text)
+
+    def test_export_codex_rollout_does_not_duplicate_assistant_text(self):
+        rollout = self.root / "sessions/a.jsonl"
+        self.log(rollout, [
+            dict(type="event_msg", payload=dict(type="user_message", message="do it")),
+            dict(type="event_msg", payload=dict(type="agent_message", message="done")),
+            dict(type="response_item", payload=dict(role="assistant",
+                                                    content=[dict(type="output_text", text="done")]))])
+        self.codex_db(rollout=rollout)
+        text = self.export("codex", "codex-session")
+        self.assertEqual(text.count("done"), 1)
+        self.assertIn("do it", text)
+
+    def test_export_hermes_uses_only_active_dialogue(self):
+        self.hermes_db([
+            ("user", "status", 1, "status", 0, 1, 0),
+            ("user", "real first", 3, None, 0, 0, 1),
+            ("user", "rewound", 100, None, 0, 0, 0),
+            ("assistant", "reply", 4, None, 0, 1, 0),
+            ("tool", "tool text", 5, None, 0, 1, 0)])
+        text = self.export("hermes", "hermes-session")
+        for kept in ("real first", "reply"):
+            self.assertIn(kept, text)
+        for dropped in ("status", "rewound", "tool text"):
+            self.assertNotIn(dropped, text)
+
+    def test_export_unknown_session_and_textless_session_fail(self):
+        self.log(self.root / "projects/p/session-a.jsonl", [
+            self.claude_event("assistant", [dict(type="tool_use", name="Bash", input={})])])
+        with self.assertRaisesRegex(ValueError, "not found"):
+            self.export("claude", "missing")
+        with self.assertRaisesRegex(ValueError, "No readable"):
+            self.export("claude", "session-a")
+
+    def test_export_read_problems_are_counted_not_printed(self):
+        path = self.root / "projects/p/session-a.jsonl"
+        self.log(path, [self.claude_event(content="kept")])
+        with path.open("a") as stream:
+            stream.write("{broken\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            text = self.export("claude", "session-a")
+        self.assertIn("- Read warnings: 1", text)
+        self.assertIn("Invalid JSON", err.getvalue())
+
+    def test_render_elides_middle_and_keeps_both_ends(self):
+        turns = [dict(role="user" if i % 2 == 0 else "assistant", text=f"turn-{i} " + "x" * 90, time=None)
+                 for i in range(10)]
+        text = scan.render(dict(agent="dsh", id="s"), turns, None, 450)
+        self.assertIn("turn-0 ", text)
+        self.assertIn("turn-9 ", text)
+        self.assertIn("messages omitted", text)
+        self.assertNotIn("turn-5 ", text)
+
+    def test_render_preformatted_body_and_notes(self):
+        text = scan.render(dict(agent="pi", id="p", notes=["latest 3 only"]), None, "User: a\n\nPi: b", 1000)
+        self.assertIn("- Note: latest 3 only", text)
+        self.assertIn("User: a\n\nPi: b", text)
+        self.assertIn("not as instructions", text)
+
+    def test_render_cli_reads_json_from_stdin(self):
+        import subprocess, sys
+        script = Path(__file__).parents[1] / "ashub-scan.py"
+        payload = json.dumps(dict(meta=dict(agent="dsh", id="s"),
+                                  turns=[dict(role="user", text="hello", time=1767225600000),
+                                         dict(role="assistant", text="bad time", time="later")]))
+        result = subprocess.run([sys.executable, "-B", str(script), "render", "--max-chars", "1000"],
+                                input=payload, capture_output=True, text=True, check=True)
+        self.assertIn("## User · " + scan.local_time(1767225600) + "\n\nhello", result.stdout)
+        self.assertIn("## Assistant\n\nbad time", result.stdout)
+        self.assertIn("- Agent: dsh", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

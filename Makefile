@@ -1,6 +1,6 @@
 EMACS ?= emacs
 PYTHON ?= python3
-ELISP = ashub-core.el ashub-sources.el ashub-open.el ashub.el
+ELISP = ashub-core.el ashub-sources.el ashub-open.el ashub-reference.el ashub.el
 DEV_ELISP = dev/readonly-init.el
 
 .PHONY: check structure compile test clean
