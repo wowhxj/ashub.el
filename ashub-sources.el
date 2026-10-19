@@ -202,13 +202,17 @@
                         (turn (and (or (listp outline) (vectorp outline))
                                    (> (length outline) 0) (elt outline 0)))
                         (prompt (and (listp turn) (alist-get 'prompt turn)))
-                        (title (alist-get 'title values)))
+                        (title (alist-get 'title values))
+                        (updated (ashub--seconds (alist-get 'updatedAt raw)))
+                        (created (ashub--seconds (alist-get 'createdAt raw))))
                    (unless (and (stringp id) (not (string-empty-p id)))
                      (error "DSH item missing full sessionId"))
                    (unless (or (null cwd) (stringp cwd)) (error "Invalid DSH cwd field"))
                    ;; updatedAt and generated titles are not message timestamps/text.
-                   (unless (stringp first) (cl-incf missing-first))
-                   (unless last (cl-incf missing-time))
+                   (unless (seq-some (lambda (text) (and (stringp text) (not (string-empty-p (string-trim text)))))
+                                     (list first prompt title))
+                     (cl-incf missing-first))
+                   (unless (or last updated created) (cl-incf missing-time))
                    (push (ashub-session-create
                           :agent 'dsh :source source :id id :cwd cwd
                           :first-message (and (stringp first) first) :last-active last
@@ -221,11 +225,11 @@
                           :metadata (list :native-source (plist-get result :source)
                                           :prompt-preview (and (stringp prompt)
                                                                (not (string-empty-p (string-trim prompt))) prompt)
-                                          :updated-at (ashub--seconds (alist-get 'updatedAt raw)))) items))
+                                          :updated-at updated :created-at created)) items))
                (error (push (error-message-string bad) diagnostics))))
            (when (or (> missing-first 0) (> missing-time 0))
              (push (list :kind 'metadata
-                         :message (format "DSH: %d 条未提供原始首条消息，%d 条未提供可信交互时间；已有消息预览/标题单独标注，更新时间不冒充交互时间"
+                         :message (format "DSH: %d 条无可用消息/预览，%d 条无可用时间；预览/标题已标注，来源更新/创建时间以 * 区分"
                                           missing-first missing-time)) diagnostics))
            (funcall callback (nreverse items) (nreverse diagnostics)))
        (error (funcall on-error (error-message-string err)))))

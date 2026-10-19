@@ -19,7 +19,8 @@
   "Explicit source plists, or nil for the five default sources.
 Each plist has :agent (claude, codex, pi, dsh or hermes), :root (local
 storage home; Pi uses its sessions directory), and optional :label,
-:profile, :program, :environment, :args, :scan-function, :open-function.
+:profile, :program, :environment, :args, :scan-function, :open-function,
+:create-function.  Creation adapters receive (SOURCE DIRECTORY READY ERROR).
 Additional roots must carry their own restore environment/profile.
 DSH uses the client's configured Host; additional Hosts need explicit
 scan/open functions rather than mutating the client's global transport."
@@ -151,11 +152,23 @@ Conflicting restore configuration for the same source is an error."
                          (list (ashub-session-agent session) (ashub-session-id session)
                                (ashub-session-cwd session) (ashub-session-preview session)))))
 
+(defun ashub-session-display-time (session)
+  "Return interaction time, or explicitly attributed source update/create time."
+  (or (ashub-session-last-active session)
+      (plist-get (ashub-session-metadata session) :updated-at)
+      (plist-get (ashub-session-metadata session) :created-at)))
+
+(defun ashub-session-display-time-source (session)
+  "Describe which timestamp is used in SESSION's date column."
+  (cond ((ashub-session-last-active session) 'interaction)
+        ((plist-get (ashub-session-metadata session) :updated-at) 'updated)
+        ((plist-get (ashub-session-metadata session) :created-at) 'created)))
+
 (defun ashub-sort-sessions (sessions)
-  "Return SESSIONS newest first, with unknown interaction times last."
+  "Return SESSIONS newest first by attributed display time, unknown dates last."
   (sort (copy-sequence sessions)
         (lambda (a b)
-          (let ((ta (ashub-session-last-active a)) (tb (ashub-session-last-active b)))
+          (let ((ta (ashub-session-display-time a)) (tb (ashub-session-display-time b)))
             (if (equal ta tb)
                 (string-lessp (prin1-to-string (ashub-session-key a))
                               (prin1-to-string (ashub-session-key b)))

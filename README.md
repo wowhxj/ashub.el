@@ -6,12 +6,12 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 
 ## Features
 
-- Sessions grouped by project, with last-interaction time and first-message previews when available.
+- Sessions grouped by project, with available dates and message previews.
 - Search by agent, full session ID, project path, or first user message.
 - Keyboard navigation, agent shortcuts, collapsible groups, and session details.
 - Asynchronous history loading with per-source diagnostics.
 
-Browsing never restores a session or sends a message. Press `RET` to explicitly resume the selected session. A restoring notice appears immediately in the echo area, header, and session row until readiness, failure, or timeout.
+Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. A restoring notice appears immediately in the echo area, header, and session row until readiness, failure, or timeout.
 
 ## Requirements
 
@@ -54,6 +54,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | --- | --- |
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
+| `N` | Create a session: choose an agent (default Pi), then an existing project directory |
 | `/` | Search |
 | `a` / `o` | Filter by agent / project |
 | `1`–`5` | Filter and jump to Claude / Codex / Pi / DSH / Hermes |
@@ -65,13 +66,15 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `g` / `!` | Refresh / show diagnostics |
 | `q` | Leave the Hub and restore the previous window layout |
 
+`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+
 Project grouping is the default. Agent shortcuts preserve the current project and search filters; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
 ## Troubleshooting
 
 If Pi or DSH is missing, press `!` and check that the loaded client provides `emacs-pi-list-sessions` or `emacs-dsh-list-sessions`. After upgrading VC-installed packages with `M-x package-vc-upgrade`, finish active chats and restart Emacs to load the new code.
 
-`[预览]` marks a projected message preview; `[标题]` marks a title, not the original message. DSH previews use the same `turnOutline` data as emacs-dsh. Source update times are shown in details, not substituted for interaction times.
+`[预览]` marks a projected message preview; `[标题]` marks a title, not the original message. DSH previews use the same `turnOutline` data as emacs-dsh. DSH dates use the interaction timestamp when available, otherwise `updatedAt` or `createdAt`, matching emacs-dsh. A `*` marks a source update/creation time rather than a verified interaction time; details show its origin.
 
 The header distinguishes source failures, read issues, and missing fields. Missing fields do not mean sessions were lost; displayed counts also reflect search filters and hidden internal, empty, or archived sessions. Press `!` for details.
 

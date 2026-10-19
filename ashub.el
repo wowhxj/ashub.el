@@ -19,6 +19,7 @@
 (require 'text-property-search)
 
 (declare-function ashub--opening-summary "ashub-open")
+(declare-function ashub-create-session "ashub-open")
 
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
@@ -47,7 +48,7 @@
     items))
 
 (defun ashub--visible-sessions ()
-  "Return filtered sessions ordered by last interaction."
+  "Return filtered sessions ordered by their attributed display date."
   (ashub-sort-sessions
    (seq-filter (lambda (item)
                  (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query))
@@ -78,11 +79,13 @@
   (let* ((start (point)) (key (ashub-session-key session))
          (width (max 40 (window-body-width (get-buffer-window (current-buffer)))))
          (id (ashub-short-id session sessions))
-         (time (if-let* ((seconds (ashub-session-last-active session)))
-                   (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds)) "时间未知"))
+         (time (if-let* ((seconds (ashub-session-display-time session)))
+                   (concat (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
+                           (if (memq (ashub-session-display-time-source session) '(updated created)) "*" ""))
+                 "时间未知"))
          (project-width (max 10 (min 28 (/ width 5))))
          (preview (ashub--one-line (ashub--preview-text session)))
-         (prefix (format (format "  %%-7s %%-16s %%-%ds %%-%ds " (max 8 (length id)) project-width)
+         (prefix (format (format "  %%-7s %%-17s %%-%ds %%-%ds " (max 8 (length id)) project-width)
                          (ashub-session-agent session) time id
                          (ashub--middle (ashub-session-project session) project-width)))
          (prefix (concat prefix (if (gethash key ashub--opening) "[恢复中] " ""))))
@@ -137,7 +140,7 @@
       (setq ashub--status
             (concat "ashub"
                     (when-let* ((opening (ashub--opening-summary)))
-                      (concat "  正在恢复：" opening))
+                      (concat "  " opening))
                     (format "  显示 %d/已载入 %d（过滤/隐藏 %d）"
                             (length sessions) total (- total (length sessions)))
                     (if pending (format "  扫描中：%s" (string-join (nreverse pending) ", ")) "")
@@ -152,8 +155,10 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 详情  ! 诊断\n")
+    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 详情  ! 诊断\n")
     (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n\n")
+    (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
+      (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
     (when ashub--states
       (maphash
        (lambda (_key state)
@@ -270,6 +275,17 @@
 (defun ashub--session-at-point ()
   "Return current row's session, or signal a helpful error."
   (or (get-text-property (point) 'ashub-session) (user-error "请先选择一条会话")))
+
+(defun ashub-new-session ()
+  "Choose an agent (default Pi), then a project, and create a new session."
+  (interactive)
+  (let* ((choice (completing-read "新建 Agent（默认 pi）：" '("pi" "claude" "codex" "dsh" "hermes") nil t nil nil "pi"))
+         (agent (if (string-empty-p (string-trim choice)) 'pi (intern choice)))
+         (session (get-text-property (point) 'ashub-session))
+         (initial (or (and session (ashub--local-directory-p (ashub-session-cwd session))
+                           (ashub-session-cwd session)) default-directory))
+         (directory (read-directory-name (format "%s 项目目录：" agent) initial nil t)))
+    (ashub-create-session agent directory)))
 
 (defun ashub-open ()
   "Resume the exact session at point, through its configured client."
@@ -421,9 +437,11 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                  (plist-get (ashub-session-metadata session) :prompt-preview))
         (princ (format "\nMessage preview (turnOutline; may be truncated):\n%s\n"
                        (plist-get (ashub-session-metadata session) :prompt-preview))))
-      (when-let* ((updated (plist-get (ashub-session-metadata session) :updated-at)))
-        (princ (format "\nSource updated at (not interaction time): %s\n"
-                       (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time updated))))))))
+      (princ (format "\nDisplayed date source: %S\n" (ashub-session-display-time-source session)))
+      (dolist (field '((:updated-at . "Source updated at") (:created-at . "Source created at")))
+        (when-let* ((seconds (plist-get (ashub-session-metadata session) (car field))))
+          (princ (format "%s (not interaction time): %s\n" (cdr field)
+                         (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds)))))))))
 
 (defun ashub-copy-id ()
   "Copy the full selected session ID."
@@ -470,7 +488,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 (defvar ashub-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (dolist (entry '(("RET" . ashub-open) ("/" . ashub-search) ("a" . ashub-filter-agent)
+    (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open) ("/" . ashub-search) ("a" . ashub-filter-agent)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                      ("o" . ashub-filter-project) ("c" . ashub-change-grouping)
                      ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)
