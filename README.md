@@ -11,7 +11,7 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 - Keyboard navigation, agent shortcuts, collapsible groups, and session details.
 - Asynchronous history loading with per-source diagnostics.
 
-Browsing never restores a session or sends a message. Press `RET` to explicitly resume the selected session.
+Browsing never restores a session or sends a message. Press `RET` to explicitly resume the selected session. A restoring notice appears immediately in the echo area, header, and session row until readiness, failure, or timeout.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ Alternatively, clone this repository and add it to `load-path`:
 
 ## Usage
 
-Run `M-x ashub` or press `C-c h` with the configuration above.
+Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the current frame; `q` restores the previous window layout without closing chat buffers.
 
 | Key | Action |
 | --- | --- |
@@ -63,7 +63,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above.
 | `e` / `d` | Expand the message or preview / show session details |
 | `w` / `W` | Copy the full session ID / project path |
 | `g` / `!` | Refresh / show diagnostics |
-| `q` | Close the Hub without stopping chat buffers |
+| `q` | Leave the Hub and restore the previous window layout |
 
 Project grouping is the default. Agent shortcuts preserve the current project and search filters; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 

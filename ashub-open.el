@@ -16,7 +16,15 @@
   :type 'number :group 'ashub)
 (defvar ashub--instances (make-hash-table :test #'equal)
   "Hub-owned terminal buffers/processes, indexed by full source-qualified key.")
-(defvar ashub--opening (make-hash-table :test #'equal) "Pending native open requests.")
+(defvar ashub--opening (make-hash-table :test #'equal) "Pending restore tokens with display labels.")
+(defvar ashub-open-state-change-hook nil
+  "Hook run when a session starts or finishes restoring.")
+
+(defun ashub--opening-summary ()
+  "Return labels of pending restores, or nil when none are pending."
+  (let (labels)
+    (maphash (lambda (_key token) (push (plist-get token :label) labels)) ashub--opening)
+    (when labels (string-join (nreverse labels) ", "))))
 (defvar ashub--directory-overrides (make-hash-table :test #'equal)
   "User-selected project directory overrides; memory only.")
 
@@ -115,42 +123,51 @@ the agent has accepted the requested resume."
     (user-error "DSH Host identity changed/unavailable; refresh before restoring this source")))
 
 (defun ashub-open-session (session)
-  "Restore selected SESSION, without sending any message.
-Native clients own their verified readiness/reuse lifecycle.  Terminal
-clients reuse only live processes created by this Hub, never external ones."
+  "Restore selected SESSION with immediate feedback, without sending a message.
+Native clients verify readiness.  Terminal readiness proves launch only."
   (when (eq (ashub-session-archived session) t)
     (user-error "Archived session: unarchive in its own client, then refresh; Hub will not unarchive"))
   (let* ((key (ashub-session-key session))
          (source (ashub-session-source session))
-         (directory (ashub--restore-directory session))
          (agent (ashub-session-agent session)))
     (when (gethash key ashub--opening)
       (user-error "This session is already opening; wait for readiness or timeout"))
     (unless (or (eq agent 'dsh) (file-directory-p (ashub--root (plist-get source :root))))
       (user-error "Storage source unavailable; refusing to create or use a substitute profile"))
-    (if (and (memq agent '(claude codex hermes)) (not (plist-get source :open-function)))
-        (ashub--open-terminal
-         session directory (lambda (buffer)
-                             (pop-to-buffer buffer)
-                             (message "恢复参数已提交；请在 agent 界面确认选中会话，Hub 未发送消息")))
-      (let ((token (list nil)) timer cancel finished)
+    (let* ((directory (ashub--restore-directory session))
+           (terminal (and (memq agent '(claude codex hermes)) (not (plist-get source :open-function))))
+           (label (format "%s %s" agent (substring (ashub-session-id session) 0
+                                                  (min 12 (length (ashub-session-id session))))))
+           (token (list :label label))
+           timer cancel finished)
+      (cl-labels
+          ((finish (buffer error)
+             (unless finished
+               (setq finished t)
+               (when (timerp timer) (cancel-timer timer))
+               (when (eq (gethash key ashub--opening) token) (remhash key ashub--opening))
+               (run-hooks 'ashub-open-state-change-hook)
+               (cond (error (message "ashub 恢复失败：%s" error))
+                     ((not (buffer-live-p buffer)) (message "ashub 恢复失败：客户端返回了已关闭的 buffer"))
+                     (t (pop-to-buffer buffer)
+                        (message (if terminal
+                                     "恢复参数已提交；请在 agent 界面确认选中会话，Hub 未发送消息"
+                                   "客户端已确认会话就绪；Hub 未发送消息")))))))
         (puthash key token ashub--opening)
-        (cl-labels
-            ((finish (buffer error)
-               (unless finished
-                 (setq finished t)
-                 (when (timerp timer) (cancel-timer timer))
-                 (when (eq (gethash key ashub--opening) token) (remhash key ashub--opening))
-                 (if error (message "ashub 恢复失败：%s" error)
-                   (if (not (buffer-live-p buffer)) (message "ashub: client returned a dead buffer")
-                     (pop-to-buffer buffer) (message "客户端已确认会话就绪；Hub 未发送消息"))))))
-          (setq timer (run-at-time ashub-open-timeout nil
-                                   (lambda ()
-                                     (finish nil "恢复超时；请求可能仍在客户端中，未确认就绪")
-                                     (when (functionp cancel) (funcall cancel)))))
-          (condition-case err
+        (condition-case err
+            (progn
+              (run-hooks 'ashub-open-state-change-hook)
+              (message "正在恢复 %s 会话…" label)
+              ;; Paint before a client performs synchronous history loading.
+              (redisplay)
+              (setq timer (run-at-time ashub-open-timeout nil
+                                       (lambda ()
+                                         (finish nil "恢复超时；请求可能仍在客户端中，未确认就绪")
+                                         (when (functionp cancel) (funcall cancel)))))
               (setq cancel
                     (cond
+                     (terminal
+                      (ashub--open-terminal session directory (lambda (buffer) (finish buffer nil))))
                      ((plist-get source :open-function)
                       (funcall (plist-get source :open-function) session directory
                                (lambda (buffer) (finish buffer nil))
@@ -176,8 +193,12 @@ clients reuse only live processes created by this Hub, never external ones."
                                        (progn (ashub--dsh-source-check session) (finish buffer nil))
                                      (error (finish nil (error-message-string err)))))
                        :on-error (lambda (error) (finish nil error))))
-                     (t (user-error "No restore adapter for %s" agent))))
-            (error (finish nil (error-message-string err)))))))))
+                     (t (user-error "No restore adapter for %s" agent)))))
+          (quit
+           (finish nil "恢复已取消；客户端请求可能仍在执行")
+           (when (functionp cancel) (funcall cancel))
+           (signal 'quit nil))
+          (error (finish nil (error-message-string err))))))))
 
 (provide 'ashub-open)
 ;; Local Variables:

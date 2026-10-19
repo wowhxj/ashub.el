@@ -18,6 +18,8 @@
 (require 'help-mode)
 (require 'text-property-search)
 
+(declare-function ashub--opening-summary "ashub-open")
+
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
 (defvar-local ashub--agent-filter nil)
@@ -82,7 +84,8 @@
          (preview (ashub--one-line (ashub--preview-text session)))
          (prefix (format (format "  %%-7s %%-16s %%-%ds %%-%ds " (max 8 (length id)) project-width)
                          (ashub-session-agent session) time id
-                         (ashub--middle (ashub-session-project session) project-width))))
+                         (ashub--middle (ashub-session-project session) project-width)))
+         (prefix (concat prefix (if (gethash key ashub--opening) "[恢复中] " ""))))
     (insert prefix
             (truncate-string-to-width preview (max 12 (- width (string-width prefix) 5)) nil nil "…")
             (if (ashub--stale-p session) " [旧]" "") "\n")
@@ -132,7 +135,10 @@
        ashub--states))
     (let ((total (length (ashub--all-sessions))))
       (setq ashub--status
-            (concat (format "ashub  显示 %d/已载入 %d（过滤/隐藏 %d）"
+            (concat "ashub"
+                    (when-let* ((opening (ashub--opening-summary)))
+                      (concat "  正在恢复：" opening))
+                    (format "  显示 %d/已载入 %d（过滤/隐藏 %d）"
                             (length sessions) total (- total (length sessions)))
                     (if pending (format "  扫描中：%s" (string-join (nreverse pending) ", ")) "")
                     (if failures (format "  来源失败：%s" (string-join (nreverse failures) ", ")) "")
@@ -177,6 +183,14 @@
         (goto-char (point-min))
         (when-let* ((match (text-property-search-forward 'ashub-key window-start-key #'equal)))
           (set-window-start window (prop-match-beginning match) t))))))
+
+(defun ashub--refresh-opening-display ()
+  "Update pending-restore feedback in every live Hub without selecting it."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'ashub-mode) (ashub--render)))))
+
+(add-hook 'ashub-open-state-change-hook #'ashub--refresh-opening-display)
 
 (defun ashub--cancel-scans ()
   "Cancel background work and reject callbacks from the old generation."
@@ -444,8 +458,14 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                  (princ "\n")) states))))
 
 (defun ashub-quit ()
-  "Cancel scans and bury the Hub.  Do not stop running chat buffers."
-  (interactive) (ashub--cancel-scans) (quit-window))
+  "Cancel scans and restore this frame's previous layout, without stopping chats."
+  (interactive)
+  (ashub--cancel-scans)
+  (let ((configuration (frame-parameter nil 'ashub-window-configuration)))
+    (set-frame-parameter nil 'ashub-window-configuration nil)
+    (if (window-configuration-p configuration)
+        (set-window-configuration configuration)
+      (quit-window))))
 
 (defvar ashub-mode-map
   (let ((map (make-sparse-keymap)))
@@ -475,10 +495,15 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 
 ;;;###autoload
 (defun ashub ()
-  "Open Agent Session Hub and read configured history asynchronously."
+  "Open the Hub in the whole current frame and read history asynchronously.
+The q command restores this frame's previous window layout."
   (interactive)
-  (let ((buffer (get-buffer-create "*ashub*")))
-    (pop-to-buffer buffer)
+  (let ((buffer (get-buffer-create "*ashub*")) (frame (selected-frame)))
+    (unless (and (get-buffer-window buffer frame)
+                 (frame-parameter frame 'ashub-window-configuration))
+      (set-frame-parameter frame 'ashub-window-configuration (current-window-configuration)))
+    (switch-to-buffer buffer)
+    (delete-other-windows)
     (unless (derived-mode-p 'ashub-mode) (ashub-mode))
     (ashub-refresh)))
 
