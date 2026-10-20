@@ -444,8 +444,13 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                          (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds)))))))))
 
 (defun ashub-copy-id ()
-  "Copy the full selected session ID."
-  (interactive) (kill-new (ashub-session-id (ashub--session-at-point))) (message "已复制完整 session ID"))
+  "Copy the full selected session ID to the kill ring and system clipboard."
+  (interactive)
+  (let ((id (ashub-session-id (ashub--session-at-point))))
+    (kill-new id)
+    (when (fboundp 'gui-set-selection)
+      (gui-set-selection 'CLIPBOARD id))
+    (message "已复制完整 session ID: %s" id)))
 
 (defun ashub-copy-project ()
   "Copy the selected session's recorded project directory."

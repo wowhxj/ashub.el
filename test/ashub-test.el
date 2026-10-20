@@ -276,9 +276,21 @@
 
 (ert-deftest ashub-keymap-and-independent-load ()
   (should (eq (lookup-key ashub-mode-map (kbd "RET")) 'ashub-open))
+  (should (eq (lookup-key ashub-mode-map (kbd "w")) 'ashub-copy-id))
   (should (eq (lookup-key ashub-mode-map (kbd "/")) 'ashub-search))
   (should (eq (lookup-key ashub-mode-map (kbd "!")) 'ashub-diagnostics))
   (should-not (featurep 'ghostel)))
+
+(ert-deftest ashub-copy-id-uses-kill-ring-and-clipboard ()
+  (let ((session (ashub-test-session)) copied clipboard)
+    (cl-letf (((symbol-function 'ashub--session-at-point) (lambda () session))
+              ((symbol-function 'kill-new) (lambda (value) (setq copied value)))
+              ((symbol-function 'gui-set-selection)
+               (lambda (selection value) (setq clipboard (list selection value))))
+              ((symbol-function 'message) #'ignore))
+      (ashub-copy-id))
+    (should (equal copied "12345678-abcdef"))
+    (should (equal clipboard '(CLIPBOARD "12345678-abcdef")))))
 
 (ert-deftest ashub-worker-background-integration ()
   (let* ((root (make-temp-file "ashub-fixture-" t))
