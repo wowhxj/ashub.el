@@ -277,9 +277,33 @@
 (ert-deftest ashub-keymap-and-independent-load ()
   (should (eq (lookup-key ashub-mode-map (kbd "RET")) 'ashub-open))
   (should (eq (lookup-key ashub-mode-map (kbd "w")) 'ashub-copy-id))
+  (should (eq (lookup-key ashub-mode-map (kbd "d")) 'ashub-mark-delete))
+  (should (eq (lookup-key ashub-mode-map (kbd "x")) 'ashub-execute-deletions))
+  (should (eq (lookup-key ashub-mode-map (kbd "i")) 'ashub-details))
   (should (eq (lookup-key ashub-mode-map (kbd "/")) 'ashub-search))
   (should (eq (lookup-key ashub-mode-map (kbd "!")) 'ashub-diagnostics))
   (should-not (featurep 'ghostel)))
+
+(ert-deftest ashub-delete-mark-and-confirmed-execution ()
+  (let* ((root (make-temp-file "ashub-delete-" t))
+         (path (expand-file-name "12345678-abcdef.jsonl" root))
+         (source (list :agent 'claude :root root))
+         (session (ashub-session-create :agent 'claude :source source
+                                        :id "12345678-abcdef" :path path))
+         (key (ashub-source-key source)))
+    (unwind-protect
+        (progn
+          (with-temp-file path (insert "{}\n"))
+          (with-temp-buffer
+            (ashub-mode)
+            (puthash key (list :source source :status 'ok :items (list session)) ashub--states)
+            (puthash (ashub-session-key session) t ashub--delete-marks)
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+              (ashub-execute-deletions))
+            (should-not (file-exists-p path))
+            (should-not (ashub--all-sessions))
+            (should (= (hash-table-count ashub--delete-marks) 0))))
+      (delete-directory root t))))
 
 (ert-deftest ashub-copy-id-uses-kill-ring-and-clipboard ()
   (let ((session (ashub-test-session)) copied clipboard)

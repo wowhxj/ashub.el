@@ -61,10 +61,13 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `C` | Clear all search and filters |
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
-| `e` / `d` | Expand the message or preview / show session details |
+| `e` / `i` | Expand the message or preview / show session details |
+| `d` / `x` | Mark/unmark the session for deletion / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `g` / `!` | Refresh / show diagnostics |
 | `q` | Leave the Hub and restore the previous window layout |
+
+`d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
 `N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
