@@ -32,6 +32,20 @@
 (defvar-local ashub--status "")
 (defvar-local ashub--delete-marks nil "Session keys marked for permanent deletion.")
 
+(defface ashub-current-row-face
+  '((((class color) (background light)) :background "#e5edf7")
+    (((class color) (background dark)) :background "#303b4a")
+    (t :inherit highlight))
+  "Face for the session row under point."
+  :group 'ashub)
+
+(defface ashub-delete-marked-row-face
+  '((((class color) (background light)) :background "#ffe2dc" :foreground "#8f2415")
+    (((class color) (background dark)) :background "#542b2b" :foreground "#ffd7cc")
+    (t :inherit warning))
+  "Face for session rows marked for permanent deletion."
+  :group 'ashub)
+
 (defun ashub--source-label (source)
   "Return an unambiguous readable label for SOURCE."
   (ashub--one-line
@@ -94,6 +108,11 @@
     (insert prefix
             (truncate-string-to-width preview (max 12 (- width (string-width prefix) 5)) nil nil "…")
             (if (ashub--stale-p session) " [旧]" "") "\n")
+    (when (gethash key ashub--delete-marks)
+      (let ((marked (make-overlay start (line-end-position) nil t nil)))
+        (overlay-put marked 'ashub-marked-row t)
+        (overlay-put marked 'face 'ashub-delete-marked-row-face)
+        (overlay-put marked 'priority 1)))
     (when (gethash key ashub--expanded)
       (insert "    ┊ " (replace-regexp-in-string "\n" "\n    ┊ "
                                                  (ashub--preview-text session)) "\n"))
@@ -157,7 +176,7 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 标记删除  x 执行  i 详情  ! 诊断\n")
+    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 标记删除  u 取消标记  x 执行  i 详情  ! 诊断\n")
     (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
       (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
@@ -189,7 +208,20 @@
       (save-excursion
         (goto-char (point-min))
         (when-let* ((match (text-property-search-forward 'ashub-key window-start-key #'equal)))
-          (set-window-start window (prop-match-beginning match) t))))))
+          (set-window-start window (prop-match-beginning match) t))))
+    (ashub--update-current-row-highlight)))
+
+(defun ashub--update-current-row-highlight ()
+  "Highlight the session row under point unless it is marked for deletion."
+  (when (derived-mode-p 'ashub-mode)
+    (remove-overlays (point-min) (point-max) 'ashub-current-row t)
+    (when-let* ((session (get-text-property (point) 'ashub-session))
+                (key (ashub-session-key session)))
+      (unless (gethash key ashub--delete-marks)
+        (let ((overlay (make-overlay (line-beginning-position) (line-end-position) nil t nil)))
+          (overlay-put overlay 'ashub-current-row t)
+          (overlay-put overlay 'face 'ashub-current-row-face)
+          (overlay-put overlay 'priority 0))))))
 
 (defun ashub--refresh-opening-display ()
   "Update pending-restore feedback in every live Hub without selecting it."
@@ -467,15 +499,23 @@ Cancel restores the previous search.  No new scan or restore is triggered."
       true-path)))
 
 (defun ashub-mark-delete ()
-  "Mark or unmark the selected Claude/Pi session for deletion."
+  "Mark the selected Claude/Pi session for deletion and advance."
+  (interactive)
+  (let* ((session (ashub--session-at-point)) (key (ashub-session-key session)))
+    (unless (gethash key ashub--delete-marks)
+      (ashub--delete-file-for-session session)
+      (puthash key t ashub--delete-marks)
+      (message "已标记删除；按 u 取消标记，按 x 确认执行"))
+    (ashub-next-entry)
+    (ashub--render)))
+
+(defun ashub-unmark-delete ()
+  "Remove the deletion mark from the selected session."
   (interactive)
   (let* ((session (ashub--session-at-point)) (key (ashub-session-key session)))
     (if (gethash key ashub--delete-marks)
         (progn (remhash key ashub--delete-marks) (message "已取消删除标记"))
-      (ashub--delete-file-for-session session)
-      (puthash key t ashub--delete-marks)
-      (ashub-next-entry)
-      (message "已标记删除；按 x 确认执行"))
+      (message "当前会话没有删除标记"))
     (ashub--render)))
 
 (defun ashub-execute-deletions ()
@@ -560,7 +600,8 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                      ("4" . ashub-jump-dsh) ("5" . ashub-jump-hermes)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
                      ("e" . ashub-toggle-preview) ("i" . ashub-details)
-                     ("d" . ashub-mark-delete) ("x" . ashub-execute-deletions)
+                     ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
+                     ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
                      ("!" . ashub-diagnostics) ("C" . ashub-clear-filters)
                      ("C-c C-k" . ashub-clear-filters)
@@ -571,6 +612,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 (define-derived-mode ashub-mode special-mode "ashub"
   "Browse historical agent sessions, without taking over external processes."
   (setq-local truncate-lines t)
+  (add-hook 'post-command-hook #'ashub--update-current-row-highlight nil t)
   (setq ashub--states (make-hash-table :test #'equal)
         ashub--collapsed (make-hash-table :test #'equal)
         ashub--expanded (make-hash-table :test #'equal)

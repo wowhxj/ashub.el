@@ -62,7 +62,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
 | `e` / `i` | Expand the message or preview / show session details |
-| `d` / `x` | Mark/unmark the session for deletion / confirm permanent deletion of marked sessions |
+| `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `g` / `!` | Refresh / show diagnostics |
 | `q` | Leave the Hub and restore the previous window layout |
