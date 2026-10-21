@@ -20,11 +20,14 @@
 
 (declare-function ashub--opening-summary "ashub-open")
 (declare-function ashub-create-session "ashub-open")
+(declare-function ashub--creation-source "ashub-open" (agent))
 (declare-function emacs-pi-session-root "emacs-pi-session" (session))
 (declare-function emacs-pi-session-session-id "emacs-pi-session" (session))
 (declare-function emacs-dsh--source-identity "emacs-dsh" ())
 (defvar ashub-reference-max-chars)
 (defvar ashub-reference-dsh-max-messages)
+(defvar ghostel-identity)
+(defvar ghostel--process)
 
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
@@ -85,8 +88,12 @@
   "Return SESSION's live Emacs buffer, or nil if it is not open."
   (let ((agent (ashub-session-agent session))
         (id (ashub-session-id session))
-        (key (ashub-session-key session)))
+        (key (ashub-session-key session))
+        (metadata (ashub-session-metadata session)))
     (or
+     (let ((buffer (plist-get metadata :live-buffer))
+           (process (plist-get metadata :live-process)))
+       (and (buffer-live-p buffer) (process-live-p process) buffer))
      (and (boundp 'ashub--instances)
           (let* ((instance (gethash key ashub--instances))
                  (buffer (plist-get instance :buffer))
@@ -110,13 +117,43 @@
   "Whether SESSION currently has a live Emacs buffer/process."
   (buffer-live-p (ashub--live-buffer-for-session session)))
 
+(defun ashub--unindexed-live-terminal-sessions ()
+  "Return live ashub-created terminal sessions not yet tied to history IDs."
+  (let (sessions)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (let* ((identity (and (boundp 'ghostel-identity) ghostel-identity))
+               (agent (or ashub--new-terminal-agent
+                          (and (eq (alist-get 'kind identity) 'ashub-new)
+                               (alist-get 'agent identity))))
+               (source (or ashub--new-terminal-source
+                           (and agent (condition-case nil
+                                          (ashub--creation-source agent)
+                                        (error nil)))))
+               (process (or ashub--new-terminal-process
+                            (and (boundp 'ghostel--process) ghostel--process))))
+          (when (and agent source (process-live-p process))
+            (push (ashub-session-create
+                   :agent agent
+                   :source source
+                   :id "未索引"
+                   :path (concat "live:" (buffer-name buffer))
+                   :cwd default-directory
+                   :metadata (list :unindexed-live t :live-buffer buffer
+                                   :live-process process))
+                  sessions)))))
+    (nreverse sessions)))
+
 (defun ashub--visible-sessions ()
   "Return filtered sessions ordered by their attributed display date."
-  (ashub-sort-sessions
-   (seq-filter (lambda (item)
-                 (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query)
-                      (or (not ashub--live-only) (ashub--session-open-p item))))
-               (ashub--all-sessions))))
+  (let ((sessions (ashub--all-sessions)))
+    (when ashub--live-only
+      (setq sessions (append sessions (ashub--unindexed-live-terminal-sessions))))
+    (ashub-sort-sessions
+     (seq-filter (lambda (item)
+                   (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query)
+                        (or (not ashub--live-only) (ashub--session-open-p item))))
+                 sessions))))
 
 (defun ashub--group-name (session)
   "Return SESSION's group label in the selected grouping."
@@ -132,7 +169,9 @@
 
 (defun ashub--preview-text (session)
   "Return labelled display text without treating projections as raw messages."
-  (cond ((ashub-session-first-message session) (ashub-session-first-message session))
+  (cond ((plist-get (ashub-session-metadata session) :unindexed-live)
+         "新建的 live 会话；尚未关联历史 ID")
+        ((ashub-session-first-message session) (ashub-session-first-message session))
         ((plist-get (ashub-session-metadata session) :prompt-preview)
          (concat "[预览] " (plist-get (ashub-session-metadata session) :prompt-preview)))
         ((ashub-session-title session) (concat "[标题] " (ashub-session-title session)))
@@ -142,7 +181,8 @@
   "Insert single-line table row for SESSION among SESSIONS."
   (let* ((start (point)) (key (ashub-session-key session))
          (width (max 40 (window-body-width (get-buffer-window (current-buffer)))))
-         (id (ashub-short-id session sessions))
+         (id (if (plist-get (ashub-session-metadata session) :unindexed-live)
+                 "未索引" (ashub-short-id session sessions)))
          (time (if-let* ((seconds (ashub-session-display-time session)))
                    (concat (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
                            (if (memq (ashub-session-display-time-source session) '(updated created)) "*" ""))
@@ -367,7 +407,14 @@
          (initial (file-name-as-directory
                    (or (and session (ashub--local-directory-p (ashub-session-cwd session))
                             (ashub-session-cwd session)) default-directory)))
-         (directory (read-directory-name (format "%s 项目目录：" agent) initial nil t)))
+         (directory (read-directory-name (format "%s 项目目录：" agent) initial nil nil)))
+    (when (string-empty-p directory)
+      (user-error "项目目录不能为空"))
+    (setq directory (file-name-as-directory (expand-file-name directory)))
+    (when (file-remote-p directory)
+      (user-error "请选择本地项目目录；不支持 TRAMP 新建会话"))
+    (unless (file-directory-p directory)
+      (make-directory directory t))
     (ashub-create-session agent directory)))
 
 (defun ashub-open ()

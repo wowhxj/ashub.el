@@ -54,7 +54,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | --- | --- |
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
-| `N` | Create a session: choose an agent (default Pi), then an existing project directory |
+| `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
 | `/` | Search |
 | `a` / `o` | Filter by agent / project |
 | `1`–`5` | Filter and jump to Claude / Codex / Pi / DSH / Hermes |
@@ -70,7 +70,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
-`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Terminal sessions launched by `N` appear in the `l` filter as `unindexed` until tied to a history ID; `RET` switches directly to that terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
 Project grouping is the default. Agent shortcuts preserve the current project and search filters; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 

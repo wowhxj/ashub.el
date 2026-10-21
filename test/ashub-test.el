@@ -5,6 +5,8 @@
 
 ;; The optional client is mocked, so declare its policy variable for dynamic tests.
 (defvar ghostel-module-auto-install nil)
+(defvar-local ghostel-identity nil)
+(defvar-local ghostel--process nil)
 
 (defun ashub-test-source (&optional agent root)
   "Return an isolated source for AGENT and ROOT."
@@ -953,6 +955,27 @@
        (ashub-new-session)
        (should (equal received-directory (file-name-as-directory default-directory)))))))
 
+(ert-deftest ashub-new-command-creates-missing-project-directory ()
+  (ashub-test-with-hub
+   (let* ((parent (make-temp-file "ashub-project-" t))
+          (directory (expand-file-name "new/nested-project" parent))
+          mustmatch)
+     (unwind-protect
+         (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "pi"))
+                   ((symbol-function 'read-directory-name)
+                    (lambda (_prompt _dir _default required &rest _)
+                      (setq mustmatch required)
+                      directory))
+                   ((symbol-function 'ashub-create-session)
+                    (lambda (agent selected)
+                      (should (eq agent 'pi))
+                      (should (equal selected (file-name-as-directory directory)))
+                      (should (file-directory-p selected)))))
+           (ashub-new-session)
+           (should-not mustmatch)
+           (should (file-directory-p directory)))
+       (delete-directory parent t)))))
+
 (ert-deftest ashub-new-command-cancel-does-not-start-anything ()
   (ashub-test-with-hub
    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "pi"))
@@ -1008,8 +1031,44 @@
                      (should-not args) (should-not ghostel-module-auto-install) 'fake)))
           (dotimes (_ 2)
             (ashub--create-terminal source temporary-file-directory (lambda (buffer) (push buffer buffers))))
-          (should-not (eq (car buffers) (cadr buffers))))
+          (should-not (eq (car buffers) (cadr buffers)))
+          (with-current-buffer (car buffers)
+            (should (eq ashub--new-terminal-agent 'claude))
+            (should (equal ashub--new-terminal-source source))
+            (should (eq ashub--new-terminal-process 'fake))))
       (mapc #'kill-buffer buffers))))
+
+(ert-deftest ashub-live-filter-shows-unindexed-claude-and-ret-jumps-to-buffer ()
+  (let* ((buffer (generate-new-buffer "*live Claude test*"))
+         (source (ashub-test-source 'claude))
+         (directory (file-name-as-directory temporary-file-directory))
+         (ashub-sources (list source)) (ashub-extra-sources nil)
+         session displayed)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq default-directory directory)
+            (setq-local ghostel-identity '((kind . ashub-new) (agent . claude))
+                        ghostel--process 'live-test-process))
+          (ashub-test-with-hub
+           (let ((ashub--live-only t))
+             (cl-letf (((symbol-function 'process-live-p) (lambda (_) t)))
+               (setq session (car (ashub--visible-sessions)))
+               (should (eq (ashub-session-agent session) 'claude))
+               (should (equal (ashub-session-id session) "未索引"))
+               (should (eq (ashub--live-buffer-for-session session) buffer))
+               (let ((inhibit-read-only t))
+                 (insert "live row\n")
+                 (put-text-property 1 2 'ashub-session session)
+                 (goto-char 1))
+               (cl-letf (((symbol-function 'ashub--display-full-buffer)
+                          (lambda (target) (setq displayed target)))
+                         ((symbol-function 'ashub-open-session)
+                          (lambda (_) (ert-fail "Tried to restore an already live session")))
+                         ((symbol-function 'process-live-p) (lambda (_) t)))
+                 (ashub-open))
+               (should (eq displayed buffer))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ashub-create-rejects-ambiguous-source-and-invalid-project ()
   (let ((ashub-sources '((:agent pi :root "/tmp/first") (:agent pi :root "/tmp/second")))

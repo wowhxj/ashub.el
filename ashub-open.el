@@ -18,6 +18,9 @@
   :type 'number :group 'ashub)
 (defvar ashub--instances (make-hash-table :test #'equal)
   "Hub-owned terminal buffers/processes, indexed by full source-qualified key.")
+(defvar-local ashub--new-terminal-agent nil)
+(defvar-local ashub--new-terminal-source nil)
+(defvar-local ashub--new-terminal-process nil)
 (defvar ashub--opening (make-hash-table :test #'equal) "Pending restore tokens with display labels.")
 (defvar ashub-open-state-change-hook nil
   "Hook run when a session starts or finishes restoring.")
@@ -193,12 +196,15 @@ the agent has accepted the requested resume."
                                                (file-name-nondirectory (directory-file-name directory))))))
       (with-current-buffer buffer
         (setq default-directory directory)
-        (let ((ghostel-module-auto-install nil))
-          (unless (process-live-p
-                   (ghostel-exec buffer executable args
-                                 `((kind . ashub-new) (agent . ,(plist-get source :agent))
-                                   (command . (,executable . ,args)))))
-            (user-error "Ghostel did not start a live process"))))
+        (let* ((ghostel-module-auto-install nil)
+               (process (ghostel-exec buffer executable args
+                                     `((kind . ashub-new) (agent . ,(plist-get source :agent))
+                                       (command . (,executable . ,args))))))
+          (unless (process-live-p process)
+            (user-error "Ghostel did not start a live process"))
+          (setq-local ashub--new-terminal-agent (plist-get source :agent)
+                      ashub--new-terminal-source source
+                      ashub--new-terminal-process process)))
       (funcall on-ready buffer))))
 
 (defun ashub--creation-source (agent)
