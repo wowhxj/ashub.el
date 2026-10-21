@@ -20,6 +20,9 @@
 
 (declare-function ashub--opening-summary "ashub-open")
 (declare-function ashub-create-session "ashub-open")
+(declare-function emacs-pi-session-root "emacs-pi-session" (session))
+(declare-function emacs-pi-session-session-id "emacs-pi-session" (session))
+(declare-function emacs-dsh--source-identity "emacs-dsh" ())
 (defvar ashub-reference-max-chars)
 (defvar ashub-reference-dsh-max-messages)
 
@@ -28,6 +31,7 @@
 (defvar-local ashub--agent-filter nil)
 (defvar-local ashub--project-filter nil)
 (defvar-local ashub--query "")
+(defvar-local ashub--live-only nil)
 (defvar-local ashub--grouping nil)
 (defvar-local ashub--collapsed nil)
 (defvar-local ashub--status "")
@@ -77,11 +81,41 @@
       (maphash (lambda (_key state) (setq items (append (plist-get state :items) items))) ashub--states))
     items))
 
+(defun ashub--live-buffer-for-session (session)
+  "Return SESSION's live Emacs buffer, or nil if it is not open."
+  (let ((agent (ashub-session-agent session))
+        (id (ashub-session-id session))
+        (key (ashub-session-key session)))
+    (or
+     (and (boundp 'ashub--instances)
+          (let* ((instance (gethash key ashub--instances))
+                 (buffer (plist-get instance :buffer))
+                 (process (plist-get instance :process)))
+            (and (buffer-live-p buffer) (process-live-p process) buffer)))
+     (seq-some
+      (lambda (buffer)
+        (with-current-buffer buffer
+          (cond
+           ((and (eq agent 'pi) (boundp 'emacs-pi--session) emacs-pi--session
+                 (equal id (emacs-pi-session-session-id emacs-pi--session))) buffer)
+           ((and (eq agent 'dsh) (boundp 'emacs-dsh--session-id)
+                 (equal id emacs-dsh--session-id)
+                 (or (not (plist-get (ashub-session-metadata session) :native-source))
+                     (not (fboundp 'emacs-dsh--source-identity))
+                     (equal (plist-get (ashub-session-metadata session) :native-source)
+                            (emacs-dsh--source-identity)))) buffer))))
+      (buffer-list)))))
+
+(defun ashub--session-open-p (session)
+  "Whether SESSION currently has a live Emacs buffer/process."
+  (buffer-live-p (ashub--live-buffer-for-session session)))
+
 (defun ashub--visible-sessions ()
   "Return filtered sessions ordered by their attributed display date."
   (ashub-sort-sessions
    (seq-filter (lambda (item)
-                 (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query))
+                 (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query)
+                      (or (not ashub--live-only) (ashub--session-open-p item))))
                (ashub--all-sessions))))
 
 (defun ashub--group-name (session)
@@ -113,12 +147,13 @@
                    (concat (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
                            (if (memq (ashub-session-display-time-source session) '(updated created)) "*" ""))
                  "时间未知"))
-         (project-width (max 10 (min 28 (/ width 5))))
+         (project-width (max 9 (min 27 (1- (/ width 5)))))
          (preview (ashub--one-line (ashub--preview-text session)))
-         (prefix (format (format "  %%s %%-7s %%-17s %%-%ds %%-%ds " (max 8 (length id)) project-width)
+         (prefix (format (format "  %%s %%-7s%%s %%-17s %%-%ds %%-%ds " (max 8 (length id)) project-width)
                          (if (gethash key ashub--delete-marks) "D" " ")
-                         (ashub-session-agent session) time id
-                         (ashub--middle (ashub-session-project session) project-width)))
+                         (ashub-session-agent session)
+                         (if (ashub--session-open-p session) "*" " ")
+                         time id (ashub--middle (ashub-session-project session) project-width)))
          (prefix (concat prefix (if (gethash key ashub--opening) "[恢复中] " ""))))
     (insert prefix
             (truncate-string-to-width preview (max 12 (- width (string-width prefix) 5)) nil nil "…")
@@ -188,8 +223,9 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
-    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n\n")
+    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
+    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n")
+    (insert "列标记：D=待删除，*=已打开\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
       (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
     (when ashub--states
@@ -334,8 +370,13 @@
     (ashub-create-session agent directory)))
 
 (defun ashub-open ()
-  "Resume the exact session at point, through its configured client."
-  (interactive) (ashub-open-session (ashub--session-at-point)))
+  "Open the live buffer for the selected session, or restore it if closed."
+  (interactive)
+  (let* ((session (ashub--session-at-point))
+         (buffer (ashub--live-buffer-for-session session)))
+    (if buffer
+        (ashub--display-full-buffer buffer)
+      (ashub-open-session session))))
 
 (defun ashub--move-entry (direction)
   "Move DIRECTION lines at a time to another group or session entry."
@@ -447,7 +488,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 (defun ashub-clear-filters ()
   "Clear search/agent/project filters without reading history again."
   (interactive)
-  (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil)
+  (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
   (ashub--render))
 
 (defun ashub--conversation-text (markdown)
@@ -477,6 +518,11 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                                        'ashub-details-user-face
                                      'ashub-details-assistant-face))
         (overlay-put overlay 'priority 1)))))
+
+(defun ashub--display-full-buffer (buffer)
+  "Select BUFFER and make it fill the frame's window layout."
+  (pop-to-buffer buffer)
+  (delete-other-windows))
 
 (defun ashub-details ()
   "Display full identity, metadata, and the complete readable conversation."
@@ -520,7 +566,8 @@ Cancel restores the previous search.  No new scan or restore is triggered."
       (princ "\nConversation (user and assistant text; thoughts/tool calls omitted):\n\n")
       (let ((start (point)))
         (princ conversation)
-        (ashub--highlight-conversation start (point))))))
+        (ashub--highlight-conversation start (point))))
+    (ashub--display-full-buffer "*ashub details*")))
 
 (defun ashub--delete-file-for-session (session)
   "Return SESSION's validated local history file for permanent deletion."
@@ -597,6 +644,13 @@ Cancel restores the previous search.  No new scan or restore is triggered."
       (gui-set-selection 'CLIPBOARD id))
     (message "已复制完整 session ID: %s" id)))
 
+(defun ashub-toggle-live-filter ()
+  "Toggle the Hub's live-session-only filter."
+  (interactive)
+  (setq ashub--live-only (not ashub--live-only))
+  (ashub--render)
+  (message "Live sessions filter %s" (if ashub--live-only "on" "off")))
+
 (defun ashub-copy-project ()
   "Copy the selected session's recorded project directory."
   (interactive)
@@ -644,7 +698,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                      ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)
                      ("4" . ashub-jump-dsh) ("5" . ashub-jump-hermes)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
-                     ("i" . ashub-details)
+                     ("i" . ashub-details) ("l" . ashub-toggle-live-filter)
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
@@ -661,6 +715,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   (setq ashub--states (make-hash-table :test #'equal)
         ashub--collapsed (make-hash-table :test #'equal)
         ashub--delete-marks (make-hash-table :test #'equal)
+        ashub--live-only nil
         ashub--grouping ashub-group-by)
   (add-hook 'kill-buffer-hook #'ashub--cancel-scans nil t))
 

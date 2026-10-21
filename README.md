@@ -62,6 +62,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
 | `i` | Show session details and the full readable conversation (user/assistant text; thoughts and tool calls omitted) |
+| `l` | Toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
 | `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `g` / `!` | Refresh / show diagnostics |

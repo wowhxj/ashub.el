@@ -155,6 +155,7 @@ the agent has accepted the requested resume."
               ((not (buffer-live-p buffer)) (message "ashub %s失败：客户端返回了已关闭的 buffer" verb))
               (t
                (pop-to-buffer buffer)
+               (delete-other-windows)
                (message (if terminal
                             (concat verb "参数已提交；请在 agent 界面确认，Hub 未发送消息")
                           (if (eq operation 'create)

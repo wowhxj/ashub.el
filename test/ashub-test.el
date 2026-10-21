@@ -272,6 +272,14 @@
                    (ashub-test-session :metadata '(:native-source ("host" "nonce" desktop))))
                   :type 'user-error)))
 
+(ert-deftest ashub-full-buffer-display-selects-and-maximizes-buffer ()
+  (let (selected maximized)
+    (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buffer) (setq selected buffer)))
+              ((symbol-function 'delete-other-windows) (lambda () (setq maximized t))))
+      (ashub--display-full-buffer "*test full buffer*")
+      (should (equal selected "*test full buffer*"))
+      (should maximized))))
+
 (ert-deftest ashub-keymap-and-independent-load ()
   (should (eq (lookup-key ashub-mode-map (kbd "RET")) 'ashub-open))
   (should (eq (lookup-key ashub-mode-map (kbd "w")) 'ashub-copy-id))
@@ -279,10 +287,32 @@
   (should (eq (lookup-key ashub-mode-map (kbd "u")) 'ashub-unmark-delete))
   (should (eq (lookup-key ashub-mode-map (kbd "x")) 'ashub-execute-deletions))
   (should (eq (lookup-key ashub-mode-map (kbd "i")) 'ashub-details))
+  (should (eq (lookup-key ashub-mode-map (kbd "l")) 'ashub-toggle-live-filter))
   (should-not (lookup-key ashub-mode-map (kbd "e")))
   (should (eq (lookup-key ashub-mode-map (kbd "/")) 'ashub-search))
   (should (eq (lookup-key ashub-mode-map (kbd "!")) 'ashub-diagnostics))
   (should-not (featurep 'ghostel)))
+
+(ert-deftest ashub-live-filter-shows-only-open-sessions-and-clears-cleanly ()
+  (ashub-test-with-hub
+   (let ((open (ashub-test-session :id "open"))
+         (closed (ashub-test-session :id "closed")))
+     (ashub-test-install (list open closed))
+     (let ((ashub--live-only t))
+       (cl-letf (((symbol-function 'ashub--session-open-p)
+                  (lambda (session) (equal (ashub-session-id session) "open"))))
+         (should (equal (ashub--visible-sessions) (list open))))))))
+
+(ert-deftest ashub-live-row-shows-open-status ()
+  (let ((session (ashub-test-session)))
+    (with-temp-buffer
+      (ashub-mode)
+      (ashub-test-install (list session))
+      (let ((inhibit-read-only t))
+        (cl-letf (((symbol-function 'ashub--session-open-p) (lambda (_) t)))
+          (ashub--insert-row session (list session))
+          (should (string-match-p "claude +\\*" (buffer-string)))
+          (should-not (string-match-p "\\[已打开\\]" (buffer-string))))))))
 
 (ert-deftest ashub-unmark-delete-removes-current-mark ()
   (ashub-test-with-hub
