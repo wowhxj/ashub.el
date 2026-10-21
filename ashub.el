@@ -20,6 +20,8 @@
 
 (declare-function ashub--opening-summary "ashub-open")
 (declare-function ashub-create-session "ashub-open")
+(defvar ashub-reference-max-chars)
+(defvar ashub-reference-dsh-max-messages)
 
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
@@ -28,7 +30,6 @@
 (defvar-local ashub--query "")
 (defvar-local ashub--grouping nil)
 (defvar-local ashub--collapsed nil)
-(defvar-local ashub--expanded nil)
 (defvar-local ashub--status "")
 (defvar-local ashub--delete-marks nil "Session keys marked for permanent deletion.")
 
@@ -44,6 +45,20 @@
     (((class color) (background dark)) :background "#542b2b" :foreground "#ffd7cc")
     (t :inherit warning))
   "Face for session rows marked for permanent deletion."
+  :group 'ashub)
+
+(defface ashub-details-user-face
+  '((((class color) (background light)) :background "#e7f0ff" :extend t)
+    (((class color) (background dark)) :background "#29384b" :extend t)
+    (t :inherit shadow))
+  "Background for user turns in session details."
+  :group 'ashub)
+
+(defface ashub-details-assistant-face
+  '((((class color) (background light)) :background "#f4f0df" :extend t)
+    (((class color) (background dark)) :background "#403b2a" :extend t)
+    (t :inherit default))
+  "Background for assistant turns in session details."
   :group 'ashub)
 
 (defun ashub--source-label (source)
@@ -113,9 +128,6 @@
         (overlay-put marked 'ashub-marked-row t)
         (overlay-put marked 'face 'ashub-delete-marked-row-face)
         (overlay-put marked 'priority 1)))
-    (when (gethash key ashub--expanded)
-      (insert "    ┊ " (replace-regexp-in-string "\n" "\n    ┊ "
-                                                 (ashub--preview-text session)) "\n"))
     (add-text-properties start (point) (list 'ashub-session session 'ashub-key key
                                              'rear-nonsticky t))
     ;; Exclude every newline: highlighting it can paint the next line's margin.
@@ -176,7 +188,7 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  e 展开  d 标记删除  u 取消标记  x 执行  i 详情  ! 诊断\n")
+    (insert "N 新建  RET 恢复  n/p 移动  / 搜索  a agent  o 项目  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
     (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
       (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
@@ -438,17 +450,45 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil)
   (ashub--render))
 
-(defun ashub-toggle-preview ()
-  "Toggle the selected message/preview/title, preserving its origin label."
-  (interactive)
-  (let ((key (ashub-session-key (ashub--session-at-point))))
-    (puthash key (not (gethash key ashub--expanded)) ashub--expanded)
-    (ashub--render)))
+(defun ashub--conversation-text (markdown)
+  "Extract dialogue from reference MARKDOWN, including Pi's plain speaker labels."
+  (let ((start (or (string-match "^## \\(User\\|Assistant\\)" markdown)
+                   (string-match "^\\(?:User\\|Pi\\|Summary\\|Branch summary\\): " markdown))))
+    (if start (substring markdown start)
+      "[没有可显示的用户/助手对话文本]")))
+
+(defun ashub--highlight-conversation (start end)
+  "Apply speaker-specific backgrounds to conversation text from START to END."
+  (let (speakers)
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward
+              "^\\(?:## \\)?\\(User\\|Assistant\\|Pi\\|Summary\\|Branch summary\\)\\(?: ·.*\\)?\\(?:: \\|$\\)"
+              end t)
+        (push (cons (match-beginning 0)
+                    (if (equal (match-string-no-properties 1) "User") 'user 'assistant))
+              speakers)))
+    (setq speakers (nreverse speakers))
+    (while speakers
+      (let* ((speaker (pop speakers)) (next (car speakers))
+             (overlay (make-overlay (car speaker) (or (car next) end))))
+        (overlay-put overlay 'ashub-conversation t)
+        (overlay-put overlay 'face (if (eq (cdr speaker) 'user)
+                                       'ashub-details-user-face
+                                     'ashub-details-assistant-face))
+        (overlay-put overlay 'priority 1)))))
 
 (defun ashub-details ()
-  "Display full identity and known metadata, not a complete transcript."
+  "Display full identity, metadata, and the complete readable conversation."
   (interactive)
-  (let* ((session (ashub--session-at-point)) (stale (ashub--stale-p session)))
+  (let* ((session (ashub--session-at-point)) (stale (ashub--stale-p session))
+         (conversation
+          (condition-case err
+              (let* ((ashub-reference-max-chars most-positive-fixnum)
+                     (ashub-reference-dsh-max-messages most-positive-fixnum)
+                     (markdown (ashub-reference-markdown session)))
+                (ashub--conversation-text markdown))
+            (error (format "[读取对话失败：%s]" (error-message-string err))))))
     (with-help-window "*ashub details*"
       (princ (format "Agent: %s\nSession ID: %s\nSource: %s\nStorage path: %s\nProject: %s\n"
                      (ashub-session-agent session) (ashub-session-id session)
@@ -475,7 +515,11 @@ Cancel restores the previous search.  No new scan or restore is triggered."
       (dolist (field '((:updated-at . "Source updated at") (:created-at . "Source created at")))
         (when-let* ((seconds (plist-get (ashub-session-metadata session) (car field))))
           (princ (format "%s (not interaction time): %s\n" (cdr field)
-                         (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds)))))))))
+                         (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds))))))
+      (princ "\nConversation (user and assistant text; thoughts/tool calls omitted):\n\n")
+      (let ((start (point)))
+        (princ conversation)
+        (ashub--highlight-conversation start (point))))))
 
 (defun ashub--delete-file-for-session (session)
   "Return SESSION's validated local history file for permanent deletion."
@@ -599,7 +643,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
                      ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)
                      ("4" . ashub-jump-dsh) ("5" . ashub-jump-hermes)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
-                     ("e" . ashub-toggle-preview) ("i" . ashub-details)
+                     ("i" . ashub-details)
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
@@ -615,7 +659,6 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   (add-hook 'post-command-hook #'ashub--update-current-row-highlight nil t)
   (setq ashub--states (make-hash-table :test #'equal)
         ashub--collapsed (make-hash-table :test #'equal)
-        ashub--expanded (make-hash-table :test #'equal)
         ashub--delete-marks (make-hash-table :test #'equal)
         ashub--grouping ashub-group-by)
   (add-hook 'kill-buffer-hook #'ashub--cancel-scans nil t))

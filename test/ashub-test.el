@@ -83,13 +83,11 @@
      (ashub--render)
      (should (equal (ashub-session-id (ashub--session-at-point)) "second-id")))))
 
-(ert-deftest ashub-collapse-and-full-preview ()
+(ert-deftest ashub-collapse-group-hides-sessions ()
   (ashub-test-with-hub
    (setq ashub--grouping 'agent)
-   (ashub-test-install (list (ashub-test-session :first-message "first\nsecond")))
+   (ashub-test-install (list (ashub-test-session)))
    (goto-char (point-min)) (search-forward "12345678") (beginning-of-line)
-   (ashub-toggle-preview)
-   (should (string-match-p "┊ second" (buffer-string)))
    (ashub-toggle-group)
    (should-not (string-match-p "12345678" (buffer-string)))
    (should (string-match-p "+ claude" (buffer-string)))))
@@ -281,6 +279,7 @@
   (should (eq (lookup-key ashub-mode-map (kbd "u")) 'ashub-unmark-delete))
   (should (eq (lookup-key ashub-mode-map (kbd "x")) 'ashub-execute-deletions))
   (should (eq (lookup-key ashub-mode-map (kbd "i")) 'ashub-details))
+  (should-not (lookup-key ashub-mode-map (kbd "e")))
   (should (eq (lookup-key ashub-mode-map (kbd "/")) 'ashub-search))
   (should (eq (lookup-key ashub-mode-map (kbd "!")) 'ashub-diagnostics))
   (should-not (featurep 'ghostel)))
@@ -530,14 +529,12 @@
    (should (string-match-p "o 项目" (buffer-string)))
    (should (string-match-p "1 Claude.*2 Codex.*3 Pi.*4 DSH.*5 Hermes" (buffer-string)))))
 
-(ert-deftest ashub-entry-navigation-skips-help-and-expanded-preview ()
+(ert-deftest ashub-entry-navigation-skips-help-lines ()
   (ashub-test-with-hub
    (let ((a (ashub-test-session :id "first-entry" :last-active 20
                                 :first-message "one\ntwo\nthree"))
          (b (ashub-test-session :id "second-entry" :last-active 10)))
      (ashub-test-install (list a b))
-     (puthash (ashub-session-key a) t ashub--expanded)
-     (ashub--render)
      (goto-char (point-min))
      (ashub-next-entry)
      (should (get-text-property (point) 'ashub-group))
@@ -635,24 +632,6 @@
      (ashub--update-current-row-highlight)
      (should (funcall face-at (point) 'ashub-current-row-face)))))
 
-(ert-deftest ashub-expanded-hover-never-includes-newlines ()
-  (ashub-test-with-hub
-   (let ((session (ashub-test-session :first-message "one\n\nthree")))
-     (ashub-test-install (list session))
-     (puthash (ashub-session-key session) t ashub--expanded)
-     (ashub--render)
-     (dolist (hover (overlays-in (point-min) (point-max)))
-       (when (overlay-get hover 'ashub-row)
-         (should-not (string-match-p "\n" (buffer-substring (overlay-start hover) (overlay-end hover))))
-         (save-excursion
-           (goto-char (overlay-start hover))
-           (should (= (overlay-start hover) (line-beginning-position)))
-           (should (= (overlay-end hover) (line-end-position))))))
-     (goto-char (point-min))
-     (while (search-forward "\n" nil t)
-       (should-not (cl-find-if (lambda (overlay) (overlay-get overlay 'mouse-face))
-                               (overlays-at (1- (point)))))))))
-
 (ert-deftest ashub-missing-client-api-names-loaded-library-and-upgrade ()
   (dolist (agent '(pi dsh))
     (let* ((feature (if (eq agent 'pi) 'emacs-pi-history 'emacs-dsh))
@@ -675,6 +654,23 @@
      (puthash key (list :source source :status 'loading) ashub--states)
      (ashub--accept-source key nil nil "Missing emacs-pi-list-sessions")
      (should (string-match-p "Missing emacs-pi-list-sessions" (buffer-string))))))
+
+(ert-deftest ashub-conversation-text-parses-pi-speaker-labels ()
+  (should (equal (ashub--conversation-text
+                  "# metadata\n\nUser: question\n\nPi: final answer")
+                 "User: question\n\nPi: final answer"))
+  (should (equal (ashub--conversation-text
+                  "# metadata\n\n## User · 2026-01-01\nquestion\n\n## Assistant\nanswer")
+                 "## User · 2026-01-01\nquestion\n\n## Assistant\nanswer"))
+  (with-temp-buffer
+    (insert "User: question\n\nPi: answer")
+    (ashub--highlight-conversation (point-min) (point-max))
+    (should (= 1 (cl-count-if (lambda (overlay)
+                                (eq (overlay-get overlay 'face) 'ashub-details-user-face))
+                              (overlays-in (point-min) (point-max)))))
+    (should (= 1 (cl-count-if (lambda (overlay)
+                                (eq (overlay-get overlay 'face) 'ashub-details-assistant-face))
+                              (overlays-in (point-min) (point-max)))))))
 
 (ert-deftest ashub-dsh-outline-preview-is-visible-searchable-and-not-raw ()
   (let (items diagnostics)
@@ -699,14 +695,18 @@
        (ashub-test-install items diagnostics)
        (should (string-match-p "\\[预览\\] needle" (buffer-string)))
        (goto-char (point-min)) (search-forward "preview-") (beginning-of-line)
-       (ashub-toggle-preview)
-       (should (string-match-p "┊ second" (buffer-string)))
        (save-window-excursion
-         (ashub-details)
+         (cl-letf (((symbol-function 'ashub-reference-markdown)
+                    (lambda (_session)
+                      (should (= ashub-reference-max-chars most-positive-fixnum))
+                      (should (= ashub-reference-dsh-max-messages most-positive-fixnum))
+                      "# metadata\n## User\nneedle\n## Assistant\nfinal answer")))
+           (ashub-details))
          (with-current-buffer "*ashub details*"
            (should (string-match-p "First user message:\n\\[unknown\\]" (buffer-string)))
            (should (string-match-p "Message preview (turnOutline" (buffer-string)))
-           (should (string-match-p "needle\nsecond" (buffer-string)))))))))
+           (should (string-match-p (regexp-quote "## User\nneedle\n## Assistant\nfinal answer")
+                                   (buffer-string)))))))))
 
 (ert-deftest ashub-dsh-original-preview-and-title-are-distinct ()
   (let (items)
