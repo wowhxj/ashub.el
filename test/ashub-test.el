@@ -940,6 +940,19 @@
        (ashub-new-session)
        (should (equal (reverse steps) '(agent directory create)))))))
 
+(ert-deftest ashub-new-command-normalizes-initial-directory-for-completion ()
+  (ashub-test-with-hub
+   (let ((default-directory (directory-file-name temporary-file-directory))
+         received-directory)
+     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "claude"))
+               ((symbol-function 'read-directory-name)
+                (lambda (_prompt directory &rest _)
+                  (setq received-directory directory)
+                  directory))
+               ((symbol-function 'ashub-create-session) (lambda (&rest _) nil)))
+       (ashub-new-session)
+       (should (equal received-directory (file-name-as-directory default-directory)))))))
+
 (ert-deftest ashub-new-command-cancel-does-not-start-anything ()
   (ashub-test-with-hub
    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "pi"))

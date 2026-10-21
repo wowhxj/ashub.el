@@ -364,8 +364,9 @@
   (let* ((choice (completing-read "新建 Agent（默认 pi）：" '("pi" "claude" "codex" "dsh" "hermes") nil t nil nil "pi"))
          (agent (if (string-empty-p (string-trim choice)) 'pi (intern choice)))
          (session (get-text-property (point) 'ashub-session))
-         (initial (or (and session (ashub--local-directory-p (ashub-session-cwd session))
-                           (ashub-session-cwd session)) default-directory))
+         (initial (file-name-as-directory
+                   (or (and session (ashub--local-directory-p (ashub-session-cwd session))
+                            (ashub-session-cwd session)) default-directory)))
          (directory (read-directory-name (format "%s 项目目录：" agent) initial nil t)))
     (ashub-create-session agent directory)))
 
