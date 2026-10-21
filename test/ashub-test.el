@@ -699,7 +699,8 @@
          (cl-letf (((symbol-function 'ashub-reference-markdown)
                     (lambda (_session)
                       (should (= ashub-reference-max-chars most-positive-fixnum))
-                      (should (= ashub-reference-dsh-max-messages most-positive-fixnum))
+                      (should (= ashub-reference-dsh-max-messages
+                                 (min most-positive-fixnum 9007199254740991)))
                       "# metadata\n## User\nneedle\n## Assistant\nfinal answer")))
            (ashub-details))
          (with-current-buffer "*ashub details*"

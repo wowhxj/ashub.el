@@ -485,7 +485,8 @@ Cancel restores the previous search.  No new scan or restore is triggered."
          (conversation
           (condition-case err
               (let* ((ashub-reference-max-chars most-positive-fixnum)
-                     (ashub-reference-dsh-max-messages most-positive-fixnum)
+                     (ashub-reference-dsh-max-messages
+                      (min most-positive-fixnum 9007199254740991))
                      (markdown (ashub-reference-markdown session)))
                 (ashub--conversation-text markdown))
             (error (format "[读取对话失败：%s]" (error-message-string err))))))
