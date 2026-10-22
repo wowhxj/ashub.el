@@ -696,7 +696,7 @@ Cancel restores the previous search.  No new scan or restore is triggered."
   "Toggle the Hub's live-session-only filter."
   (interactive)
   (setq ashub--live-only (not ashub--live-only))
-  (ashub--render)
+  (if ashub--live-only (ashub-refresh) (ashub--render))
   (message "Live sessions filter %s" (if ashub--live-only "on" "off")))
 
 (defun ashub-copy-project ()

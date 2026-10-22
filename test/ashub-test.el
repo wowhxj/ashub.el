@@ -124,6 +124,27 @@
      (should (eq (plist-get (gethash key ashub--states) :status) 'error))
      (should-not (plist-get (gethash key ashub--states) :loaded)))))
 
+(ert-deftest ashub-live-filter-refreshes-before-showing-sessions ()
+  (ashub-test-with-hub
+   (let* ((source (ashub-test-source)) (ashub-sources (list source))
+          (old (ashub-test-session :id "old"))
+          (new (ashub-test-session :id "created-after-refresh")) callback)
+     (ashub-test-install (list old))
+     (cl-letf (((symbol-function 'ashub-scan-source)
+                (lambda (_source success _failure) (setq callback success) #'ignore))
+               ((symbol-function 'ashub--session-open-p)
+                (lambda (session) (equal (ashub-session-id session) "created-after-refresh"))))
+       (ashub-toggle-live-filter)
+       (should ashub--live-only)
+       (should callback)
+       (funcall callback (list old new) nil)
+       (should (equal (mapcar #'ashub-session-id (ashub--visible-sessions))
+                      '("created-after-refresh")))
+       (ashub-toggle-live-filter)
+       (should-not ashub--live-only)
+       (should (equal (mapcar #'ashub-session-id (ashub--all-sessions))
+                      '("old" "created-after-refresh")))))))
+
 (ert-deftest ashub-refresh-late-generation-is-ignored ()
   (ashub-test-with-hub
    (let ((ashub-sources (list (ashub-test-source))) callbacks)
