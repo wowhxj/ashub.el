@@ -263,7 +263,7 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
+    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
     (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n")
     (insert "列标记：D=待删除，*=已打开\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
@@ -514,8 +514,7 @@ Keep the current project and search filters.  Never restore a session."
   (ashub--render))
 
 (defun ashub-search ()
-  "Live literal search of agent, full ID, cwd and displayed message/preview.
-Cancel restores the previous search.  No new scan or restore is triggered."
+  "Live literal search within the current filters.  Cancel restores the old search."
   (interactive)
   (let ((hub (current-buffer)) (old ashub--query) accepted)
     (unwind-protect
@@ -532,6 +531,52 @@ Cancel restores the previous search.  No new scan or restore is triggered."
           (setq accepted t))
       (unless accepted (setq ashub--query old))
       (ashub--render))))
+
+(defun ashub--session-search-candidate (session width)
+  "Build SESSION's searchable completion string with a column-aligned display."
+  (let* ((date (if-let* ((time (ashub-session-display-time session)))
+                   (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time time))
+                 "时间未知"))
+         (agent (symbol-name (ashub-session-agent session)))
+         (id (ashub-session-id session))
+         (project (ashub-session-project session))
+         (project-width (max 16 (min 34 (- width 62))))
+         (preview (ashub--preview-text session))
+         (column (lambda (value size)
+                   (let ((short (truncate-string-to-width (ashub--one-line value) size nil nil "…")))
+                     (concat short (make-string (max 0 (- size (string-width short))) ?\s)))))
+         (preview-width (max 18 (- width 44 project-width)))
+         (display (concat (funcall column date 16) "  "
+                          (funcall column agent 8) "  "
+                          (funcall column (substring id 0 (min 12 (length id))) 12) "  "
+                          (funcall column (ashub--middle project project-width) project-width) "  "
+                          (truncate-string-to-width (ashub--one-line preview)
+                                                    preview-width nil nil "…")))
+         (search-text (mapconcat #'identity
+                                 (list agent id (ashub--source-label (ashub-session-source session))
+                                       (or (ashub-session-cwd session) "") preview)
+                                 " ")))
+    (propertize search-text 'display display)))
+
+(defun ashub-search-all ()
+  "Choose a matching session across all loaded sessions, then jump to its row."
+  (interactive)
+  (let* ((window (get-buffer-window (current-buffer) t))
+         (width (max 80 (if window (window-body-width window) (frame-width))))
+         (sessions (seq-filter (lambda (session) (ashub-session-visible-p session nil nil ""))
+                               (ashub--all-sessions)))
+         (choices (mapcar (lambda (session)
+                            (cons (ashub--session-search-candidate session width) session))
+                          sessions)))
+    (unless choices (user-error "没有可搜索的会话"))
+    (let* ((choice (completing-read "全量会话：" choices nil t))
+           (session (cdr (assoc choice choices))))
+      (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
+      (remhash (ashub--group-name session) ashub--collapsed)
+      (ashub--render)
+      (goto-char (point-min))
+      (when-let* ((match (text-property-search-forward 'ashub-key (ashub-session-key session) #'equal)))
+        (goto-char (prop-match-beginning match))))))
 
 (defun ashub-clear-filters ()
   "Clear search/agent/project filters without reading history again."
@@ -740,7 +785,8 @@ Cancel restores the previous search.  No new scan or restore is triggered."
 (defvar ashub-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open) ("/" . ashub-search) ("a" . ashub-filter-agent)
+    (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open) ("/" . ashub-search)
+                     ("j" . ashub-search-all) ("a" . ashub-filter-agent)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                      ("o" . ashub-filter-project) ("c" . ashub-change-grouping)
                      ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)

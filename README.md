@@ -55,7 +55,8 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
-| `/` | Search |
+| `/` | Search within current filters |
+| `j` | Choose a session from all loaded sessions; Vertico/Orderless can filter candidates, and `RET` jumps to the selected row |
 | `a` / `o` | Filter by agent / project |
 | `1`–`5` | Filter and jump to Claude / Codex / Pi / DSH / Hermes |
 | `C` | Clear all search and filters |
