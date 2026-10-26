@@ -28,12 +28,12 @@
 (defvar ashub-reference-dsh-max-messages)
 (defvar ghostel-identity)
 (defvar ghostel--process)
+(defvar ghostel--pid)
 
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
 (defvar-local ashub--agent-filter nil)
 (defvar-local ashub--project-filter nil)
-(defvar-local ashub--query "")
 (defvar-local ashub--live-only nil)
 (defvar-local ashub--grouping nil)
 (defvar-local ashub--collapsed nil)
@@ -84,6 +84,32 @@
       (maphash (lambda (_key state) (setq items (append (plist-get state :items) items))) ashub--states))
     items))
 
+(defun ashub--claude-terminal-session-id (source)
+  "Read the current terminal's exact Claude session ID for SOURCE, if known."
+  (when (eq (plist-get source :agent) 'claude)
+    (condition-case nil
+        (let* ((identity (and (boundp 'ghostel-identity) ghostel-identity))
+               (terminal-source
+                (or ashub--new-terminal-source
+                    (and (eq (alist-get 'kind identity) 'ashub-new)
+                         (eq (alist-get 'agent identity) 'claude)
+                         (ashub--creation-source 'claude))))
+               (process (or ashub--new-terminal-process
+                            (and (boundp 'ghostel--process) ghostel--process)))
+               (pid (and (boundp 'ghostel--pid) ghostel--pid)))
+          (when (and terminal-source (integerp pid) (> pid 0)
+                     (process-live-p process)
+                     (equal (ashub-source-key source) (ashub-source-key terminal-source)))
+            (with-temp-buffer
+              (insert-file-contents
+               (expand-file-name (format "sessions/%d.json" pid)
+                                 (ashub--root (plist-get source :root))))
+              (let* ((record (json-parse-buffer :object-type 'alist))
+                     (id (alist-get 'sessionId record)))
+                (and (eql pid (alist-get 'pid record))
+                     (stringp id) (not (string-empty-p id)) id)))))
+      (error nil))))
+
 (defun ashub--live-buffer-for-session (session)
   "Return SESSION's live Emacs buffer, or nil if it is not open."
   (let ((agent (ashub-session-agent session))
@@ -103,6 +129,8 @@
       (lambda (buffer)
         (with-current-buffer buffer
           (cond
+           ((and (eq agent 'claude)
+                 (equal id (ashub--claude-terminal-session-id (ashub-session-source session)))) buffer)
            ((and (eq agent 'pi) (boundp 'emacs-pi--session) emacs-pi--session
                  (equal id (emacs-pi-session-session-id emacs-pi--session))) buffer)
            ((and (eq agent 'dsh) (boundp 'emacs-dsh--session-id)
@@ -119,7 +147,7 @@
 
 (defun ashub--unindexed-live-terminal-sessions ()
   "Return live ashub-created terminal sessions not yet tied to history IDs."
-  (let (sessions)
+  (let ((indexed (ashub--all-sessions)) sessions)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (let* ((identity (and (boundp 'ghostel-identity) ghostel-identity))
@@ -132,7 +160,13 @@
                                         (error nil)))))
                (process (or ashub--new-terminal-process
                             (and (boundp 'ghostel--process) ghostel--process))))
-          (when (and agent source (process-live-p process))
+          (when (and agent source (process-live-p process)
+                     (not (when-let* ((id (ashub--claude-terminal-session-id source)))
+                            (seq-some (lambda (session)
+                                        (and (equal id (ashub-session-id session))
+                                             (equal (ashub-source-key source)
+                                                    (ashub-source-key (ashub-session-source session)))))
+                                      indexed))))
             (push (ashub-session-create
                    :agent agent
                    :source source
@@ -151,7 +185,7 @@
       (setq sessions (append sessions (ashub--unindexed-live-terminal-sessions))))
     (ashub-sort-sessions
      (seq-filter (lambda (item)
-                   (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter ashub--query)
+                   (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter nil)
                         (or (not ashub--live-only) (ashub--session-open-p item))))
                  sessions))))
 
@@ -261,11 +295,11 @@
                                                  ',(if (or failures reads) 'warning 'mode-line))))
     (erase-buffer)
     (insert (propertize "Agent Session Hub\n" 'face 'bold))
-    (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
+    (insert (format "分组:%s  agent:%s  项目:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
-                    (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  R 目录重定向  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
-    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n")
+                    (ashub--one-line (or ashub--project-filter "全部"))))
+    (insert "N 新建  RET 打开/恢复  n/p 移动  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  R 目录重定向  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
+    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目筛选）\n")
     (insert "列标记：D=待删除，*=已打开\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
       (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
@@ -454,7 +488,7 @@
 
 (defun ashub-jump-agent (agent)
   "Filter to AGENT and reveal its first matching session, without scanning.
-Keep the current project and search filters.  Never restore a session."
+Keep the current project filter.  Never restore a session."
   (interactive (list (intern (completing-read "Agent：" '("claude" "codex" "pi" "dsh" "hermes") nil t))))
   (setq ashub--agent-filter agent)
   (let ((first (car (ashub--visible-sessions))))
@@ -519,25 +553,6 @@ Keep the current project and search filters.  Never restore a session."
     (setq ashub--project-filter (unless (or (equal choice "全部") (string-empty-p choice)) choice)))
   (ashub--render))
 
-(defun ashub-search ()
-  "Live literal search within the current filters.  Cancel restores the old search."
-  (interactive)
-  (let ((hub (current-buffer)) (old ashub--query) accepted)
-    (unwind-protect
-        (progn
-          (minibuffer-with-setup-hook
-              (lambda ()
-                (add-hook 'post-command-hook
-                          (lambda ()
-                            (let ((query (minibuffer-contents-no-properties)))
-                              (when (buffer-live-p hub)
-                                (with-current-buffer hub (setq ashub--query query) (ashub--render)))))
-                          nil t))
-            (setq ashub--query (read-from-minibuffer "搜索：" old)))
-          (setq accepted t))
-      (unless accepted (setq ashub--query old))
-      (ashub--render))))
-
 (defun ashub--session-search-candidate (session width)
   "Build SESSION's searchable completion string with a column-aligned display."
   (let* ((date (if-let* ((time (ashub-session-display-time session)))
@@ -577,7 +592,7 @@ Keep the current project and search filters.  Never restore a session."
     (unless choices (user-error "没有可搜索的会话"))
     (let* ((choice (completing-read "全量会话：" choices nil t))
            (session (cdr (assoc choice choices))))
-      (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
+      (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
       (remhash (ashub--group-name session) ashub--collapsed)
       (ashub--render)
       (goto-char (point-min))
@@ -585,9 +600,9 @@ Keep the current project and search filters.  Never restore a session."
         (goto-char (prop-match-beginning match))))))
 
 (defun ashub-clear-filters ()
-  "Clear search/agent/project filters without reading history again."
+  "Clear agent, project and live-only filters without reading history again."
   (interactive)
-  (setq ashub--query "" ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
+  (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
   (ashub--render))
 
 (defun ashub--conversation-text (markdown)
@@ -807,7 +822,7 @@ Keep the current project and search filters.  Never restore a session."
 (defvar ashub-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open) ("/" . ashub-search)
+    (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open)
                      ("j" . ashub-search-all) ("a" . ashub-filter-agent)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                      ("o" . ashub-filter-project) ("c" . ashub-change-grouping)

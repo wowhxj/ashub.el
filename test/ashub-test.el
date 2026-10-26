@@ -7,6 +7,7 @@
 (defvar ghostel-module-auto-install nil)
 (defvar-local ghostel-identity nil)
 (defvar-local ghostel--process nil)
+(defvar-local ghostel--pid nil)
 
 (defun ashub-test-source (&optional agent root)
   "Return an isolated source for AGENT and ROOT."
@@ -90,12 +91,11 @@
 
 (ert-deftest ashub-search-all-cancel-preserves-existing-filters ()
   (ashub-test-with-hub
-   (let ((ashub--query "before") (ashub--agent-filter 'claude)
+   (let ((ashub--agent-filter 'claude)
          (ashub--project-filter "/project") (ashub--live-only t))
      (ashub-test-install (list (ashub-test-session)))
      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) (signal 'quit nil))))
        (condition-case nil (ashub-search-all) (quit nil)))
-     (should (equal ashub--query "before"))
      (should (eq ashub--agent-filter 'claude))
      (should (equal ashub--project-filter "/project"))
      (should ashub--live-only))))
@@ -356,7 +356,8 @@
   (should (eq (lookup-key ashub-mode-map (kbd "i")) 'ashub-details))
   (should (eq (lookup-key ashub-mode-map (kbd "l")) 'ashub-toggle-live-filter))
   (should-not (lookup-key ashub-mode-map (kbd "e")))
-  (should (eq (lookup-key ashub-mode-map (kbd "/")) 'ashub-search))
+  (should-not (lookup-key ashub-mode-map (kbd "/")))
+  (should-not (fboundp 'ashub-search))
   (should (eq (lookup-key ashub-mode-map (kbd "j")) 'ashub-search-all))
   (should (eq (lookup-key ashub-mode-map (kbd "!")) 'ashub-diagnostics))
   (should-not (featurep 'ghostel)))
@@ -531,7 +532,7 @@
 (ert-deftest ashub-clear-filters-does-not-scan ()
   (ashub-test-with-hub
    (ashub-test-install (list (ashub-test-session)))
-   (setq ashub--agent-filter 'pi ashub--query "excluded" ashub--project-filter "excluded")
+   (setq ashub--agent-filter 'pi ashub--project-filter "excluded")
    (cl-letf (((symbol-function 'ashub-scan-source) (lambda (&rest _) (ert-fail "Filter rescanned"))))
      (ashub-clear-filters) (should (= (length (ashub--visible-sessions)) 1)))))
 
@@ -548,16 +549,6 @@
         (b (ashub-test-session :agent 'dsh :source '(:agent dsh :root "configured-host")
                                :metadata '(:native-source ("host" "new" desktop)))))
     (should-not (equal (ashub-session-key a) (ashub-session-key b)))))
-
-(ert-deftest ashub-search-commit-and-cancel-retain-agent-filter ()
-  (ashub-test-with-hub
-   (ashub-test-install (list (ashub-test-session)))
-   (setq ashub--agent-filter 'claude)
-   (cl-letf (((symbol-function 'read-from-minibuffer) (lambda (&rest _) "first user")))
-     (ashub-search) (should (equal ashub--query "first user")))
-   (cl-letf (((symbol-function 'read-from-minibuffer) (lambda (&rest _) (signal 'quit nil))))
-     (condition-case nil (ashub-search) (quit nil))
-     (should (equal ashub--query "first user")) (should (eq ashub--agent-filter 'claude)))))
 
 (ert-deftest ashub-dsh-malformed-record-does-not-discard-valid-items ()
   (let (items errors)
@@ -592,7 +583,7 @@
           (should (= 1 (cl-count-if (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) errors))))
       (delete-file script))))
 
-(ert-deftest ashub-empty-agent-choice-clears-filter-and-search-can-reset ()
+(ert-deftest ashub-empty-agent-choice-clears-filter ()
   (dolist (choice '("" "   " "全部"))
     (ashub-test-with-hub
      (ashub-test-install (list (ashub-test-session)))
@@ -600,16 +591,15 @@
      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) choice)))
        (ashub-filter-agent))
      (should-not ashub--agent-filter)
-     (cl-letf (((symbol-function 'read-from-minibuffer) (lambda (&rest _) "no match")))
-       (ashub-search) (should-not (ashub--visible-sessions)))
-     (cl-letf (((symbol-function 'read-from-minibuffer) (lambda (&rest _) "")))
-       (ashub-search) (should (= (length (ashub--visible-sessions)) 1))))))
+     (should (= (length (ashub--visible-sessions)) 1)))))
 
 (ert-deftest ashub-clear-filters-is-discoverable-in-view-and-keymap ()
   (ashub-test-with-hub
    (ashub-test-install (list (ashub-test-session)))
    (should (eq (lookup-key ashub-mode-map (kbd "C")) 'ashub-clear-filters))
-   (should (string-match-p "C 清除过滤" (buffer-string)))))
+   (should (string-match-p "C 清除过滤" (buffer-string)))
+   (should (string-match-p "j 全量定位" (buffer-string)))
+   (should-not (string-match-p "/ 搜索\\|搜索:" (buffer-string)))))
 
 (ert-deftest ashub-default-view-groups-by-project ()
   (ashub-test-with-hub
@@ -661,7 +651,7 @@
       (list (ashub-test-session :id (symbol-name agent) :agent agent
                                 :source (ashub-test-source agent)
                                 :cwd "/shared/project" :first-message "needle"))))
-   (setq ashub--query "needle" ashub--project-filter "shared")
+   (setq ashub--project-filter "shared")
    (let ((generation ashub--generation))
      (cl-letf (((symbol-function 'ashub-scan-source) (lambda (&rest _) (ert-fail "Rescanned")))
                ((symbol-function 'ashub-open-session) (lambda (&rest _) (ert-fail "Restored"))))
@@ -673,7 +663,6 @@
                 (should (eq ashub--agent-filter agent))
                 (should (eq (ashub-session-agent (ashub--session-at-point)) agent))
                 (should-not (gethash "/shared/project" ashub--collapsed))
-                (should (equal ashub--query "needle"))
                 (should (equal ashub--project-filter "shared"))
                 (should (= generation ashub--generation)))))))
 
@@ -1135,6 +1124,82 @@
                  (ashub-open))
                (should (eq displayed buffer))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ashub-claude-live-terminal-links-exact-indexed-session ()
+  (let* ((root (make-temp-file "ashub-claude-live-" t))
+         (source (ashub-test-source 'claude root))
+         (buffer (generate-new-buffer " *ashub Claude live*"))
+         (live (ashub-test-session :source source :id "live-id" :path "/live.jsonl"
+                                   :cwd "/same/project" :first-message "Indexed prompt"))
+         (other (ashub-test-session :source source :id "other-id" :path "/other.jsonl"
+                                    :cwd "/same/project"))
+         displayed)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "sessions" root))
+          (with-temp-file (expand-file-name "sessions/12345.json" root)
+            (insert "{\"pid\":12345,\"sessionId\":\"live-id\",\"cwd\":\"/same/project\"}"))
+          (with-current-buffer buffer
+            (setq-local ashub--new-terminal-agent 'claude
+                        ashub--new-terminal-source source
+                        ashub--new-terminal-process 'live-test-process
+                        ghostel--pid 12345))
+          (cl-letf (((symbol-function 'process-live-p)
+                     (lambda (process) (eq process 'live-test-process))))
+            (ashub-test-with-hub
+             (ashub-test-install (list live other))
+             (should (ashub--session-open-p live))
+             (should-not (ashub--session-open-p other))
+             (ashub--render)
+             (goto-char (point-min))
+             (should (re-search-forward "claude +\\*.*live-id" nil t))
+             (setq ashub--live-only t)
+             (should (equal (ashub--visible-sessions) (list live)))
+             (ashub--render)
+             (should (string-match-p "Indexed prompt" (buffer-string)))
+             (should-not (string-match-p "未索引\\|时间未知" (buffer-string)))
+             (goto-char (point-min))
+             (re-search-forward "live-id")
+             (beginning-of-line)
+             (cl-letf (((symbol-function 'ashub--display-full-buffer)
+                        (lambda (target) (setq displayed target)))
+                       ((symbol-function 'ashub-open-session)
+                        (lambda (_) (ert-fail "Restored an already live Claude session"))))
+               (ashub-open))
+             (should (eq displayed buffer)))))
+      (kill-buffer buffer)
+      (delete-directory root t))))
+
+(ert-deftest ashub-claude-terminal-identity-requires-live-pid-and-source ()
+  (let* ((root (make-temp-file "ashub-claude-identity-" t))
+         (source (ashub-test-source 'claude root))
+         (ashub-sources (list source)) (ashub-extra-sources nil)
+         (file (expand-file-name "sessions/12345.json" root))
+         (live t))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file))
+          (with-temp-buffer
+            ;; Older terminals only carry Ghostel identity, not ashub locals.
+            (setq-local ghostel-identity '((kind . ashub-new) (agent . claude))
+                        ghostel--process 'live-test-process
+                        ghostel--pid 12345)
+            (cl-letf (((symbol-function 'process-live-p) (lambda (_) live)))
+              (with-temp-file file (insert "{\"pid\":12345,\"sessionId\":\"exact-id\"}"))
+              (should (equal (ashub--claude-terminal-session-id source) "exact-id"))
+              (should-not (ashub--claude-terminal-session-id
+                           (ashub-test-source 'claude (expand-file-name "other" root))))
+              (setq live nil)
+              (should-not (ashub--claude-terminal-session-id source))
+              (setq live t)
+              (dolist (content '("{\"pid\":99999,\"sessionId\":\"wrong-pid\"}"
+                                 "{\"pid\":12345,\"sessionId\":\"\"}"
+                                 "{\"pid\":12345}" "{bad json}"))
+                (with-temp-file file (insert content))
+                (should-not (ashub--claude-terminal-session-id source)))
+              (delete-file file)
+              (should-not (ashub--claude-terminal-session-id source)))))
+      (delete-directory root t))))
 
 (ert-deftest ashub-create-rejects-ambiguous-source-and-invalid-project ()
   (let ((ashub-sources '((:agent pi :root "/tmp/first") (:agent pi :root "/tmp/second")))

@@ -55,11 +55,10 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
-| `/` | Search within current filters |
 | `j` | Choose a session from all loaded sessions; Vertico/Orderless can filter candidates, and `RET` jumps to the selected row |
 | `a` / `o` | Filter by agent / project |
 | `1`–`5` | Filter and jump to Claude / Codex / Pi / DSH / Hermes |
-| `C` | Clear all search and filters |
+| `C` | Clear all filters |
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
 | `i` | Show session details and the full readable conversation (user/assistant text; thoughts and tool calls omitted) |
@@ -72,9 +71,9 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
-`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Terminal sessions launched by `N` appear in the `l` filter as `unindexed` until tied to a history ID; `RET` switches directly to that terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `l`. Unlinked terminals appear in `l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
-Project grouping is the default. Agent shortcuts preserve the current project and search filters; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
+Project grouping is the default. Agent shortcuts preserve the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
 ## Referencing another session
 
@@ -94,6 +93,6 @@ If Pi or DSH is missing, press `!` and check that the loaded client provides `em
 
 `[预览]` marks a projected message preview; `[标题]` marks a title, not the original message. DSH previews use the same `turnOutline` data as emacs-dsh. DSH dates use the interaction timestamp when available, otherwise `updatedAt` or `createdAt`, matching emacs-dsh. A `*` marks a source update/creation time rather than a verified interaction time; details show its origin.
 
-The header distinguishes source failures, read issues, and missing fields. Missing fields do not mean sessions were lost; displayed counts also reflect search filters and hidden internal, empty, or archived sessions. Press `!` for details.
+The header distinguishes source failures, read issues, and missing fields. Missing fields do not mean sessions were lost; displayed counts also reflect agent, project, and live-only filters and hidden internal, empty, or archived sessions. Press `!` for details.
 
 This is a development version. Some histories do not provide the original first message or a reliable interaction time; these fields remain unknown. Archived sessions cannot be restored directly from the Hub.
