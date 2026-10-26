@@ -66,6 +66,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
 | `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
+| `R` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`; agent history is not rewritten). Projects whose directory no longer exists show `[目录缺失]` |
 | `g` / `!` | Refresh / show diagnostics |
 | `q` | Leave the Hub and restore the previous window layout |
 

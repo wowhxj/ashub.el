@@ -1288,6 +1288,28 @@
           (should (equal (if (eq (car case) 'other) (buffer-string) inserted)
                          (cadr case))))))))
 
+(ert-deftest ashub-relocated-project-maps-cwd-and-marks-missing ()
+  (let* ((root (make-temp-file "ashub-reloc" t))
+         (new (expand-file-name "rime-jev" root))
+         (old (expand-file-name "jev-rime" root))
+         (ashub-project-relocations (list (cons old new))))
+    (make-directory new)
+    (unwind-protect
+        (ashub-test-with-hub
+         (ashub-test-install
+          (list (ashub-test-session :id "a" :cwd (concat old "/lua"))
+                (ashub-test-session :id "b" :cwd (concat old "-other"))))
+         (let ((sessions (ashub--all-sessions)))
+           (should (equal (ashub-session-cwd (seq-find (lambda (s) (equal (ashub-session-id s) "a")) sessions))
+                          (concat new "/lua")))
+           (let ((other (seq-find (lambda (s) (equal (ashub-session-id s) "b")) sessions)))
+             ;; Prefix match is per path component, not per character.
+             (should (equal (ashub-session-cwd other) (concat old "-other")))
+             (should (ashub-session-cwd-missing-p other))
+             (should (string-match-p "目录缺失：R 重定向" (buffer-string))))
+           (should-not (ashub-session-cwd-missing-p (ashub-test-session :cwd new)))))
+      (delete-directory root t))))
+
 (provide 'ashub-test)
 ;; Local Variables:
 ;; indent-tabs-mode: nil

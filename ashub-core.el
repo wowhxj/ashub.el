@@ -41,6 +41,12 @@ It must use the supplied exact identity and invoke ON-READY with a buffer
 only after establishing a live instance.  It must not send a prompt."
   :type '(choice (const nil) function))
 
+(defcustom ashub-project-relocations nil
+  "Alist of (OLD . NEW) project directories renamed or moved on disk.
+Sessions recorded under OLD are shown and restored under NEW; agent
+history files are never rewritten.  Set interactively with `R' in the Hub."
+  :type '(alist :key-type directory :value-type directory))
+
 (cl-defstruct (ashub-session (:constructor ashub-session-create))
   agent source id path cwd first-message last-active time-source
   (internal 'unknown) (empty 'unknown) (archived 'unknown)
@@ -117,6 +123,24 @@ Conflicting restore configuration for the same source is an error."
   (if-let* ((cwd (ashub-session-cwd session)))
       (abbreviate-file-name cwd)
     "[项目未知]"))
+
+(defun ashub-session-cwd-missing-p (session)
+  "Whether SESSION records a local absolute cwd that no longer exists."
+  (let ((cwd (ashub-session-cwd session)))
+    ;; ponytail: one stat per call; cache per render if Hubs grow to thousands of rows.
+    (and cwd (file-name-absolute-p cwd) (not (file-remote-p cwd))
+         (not (file-directory-p cwd)))))
+
+(defun ashub--relocate-cwd (cwd)
+  "Map CWD through `ashub-project-relocations', longest OLD prefix wins."
+  (let (best)
+    (dolist (pair ashub-project-relocations)
+      (let ((old (directory-file-name (expand-file-name (car pair)))))
+        (when (and (stringp cwd)
+                   (or (string= cwd old) (string-prefix-p (concat old "/") cwd))
+                   (> (length old) (length (car best))))
+          (setq best (cons old (directory-file-name (expand-file-name (cdr pair))))))))
+    (if best (concat (cdr best) (substring cwd (length (car best)))) cwd)))
 
 (defun ashub--matches-p (query values)
   "Match every whitespace-separated word of QUERY against VALUES, literally."

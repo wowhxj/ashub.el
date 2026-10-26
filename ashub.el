@@ -197,7 +197,8 @@
          (prefix (concat prefix (if (gethash key ashub--opening) "[恢复中] " ""))))
     (insert prefix
             (truncate-string-to-width preview (max 12 (- width (string-width prefix) 5)) nil nil "…")
-            (if (ashub--stale-p session) " [旧]" "") "\n")
+            (if (ashub--stale-p session) " [旧]" "")
+            (if (ashub-session-cwd-missing-p session) " [目录缺失]" "") "\n")
     (when (gethash key ashub--delete-marks)
       (let ((marked (make-overlay start (line-end-position) nil t nil)))
         (overlay-put marked 'ashub-marked-row t)
@@ -263,7 +264,7 @@
     (insert (format "分组:%s  agent:%s  项目:%s  搜索:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部")) (ashub--one-line ashub--query)))
-    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
+    (insert "N 新建  RET 打开/恢复  n/p 移动  / 搜索  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  R 目录重定向  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
     (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目/搜索筛选）\n")
     (insert "列标记：D=待删除，*=已打开\n\n")
     (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
@@ -283,8 +284,12 @@
       (dolist (name (nreverse order))
         (let* ((start (point)) (folded (gethash name ashub--collapsed))
                (group (nreverse (gethash name groups))))
-          (insert (propertize (format "%s %s (%d)\n" (if folded "+" "−") (ashub--one-line name)
-                                      (length group)) 'face 'bold))
+          (insert (propertize (format "%s %s (%d)%s\n" (if folded "+" "−") (ashub--one-line name)
+                                      (length group)
+                                      (if (and (eq ashub--grouping 'project)
+                                               (ashub-session-cwd-missing-p (car group)))
+                                          "  [目录缺失：R 重定向]" ""))
+                              'face 'bold))
           (add-text-properties start (point) (list 'ashub-group name 'ashub-key (list 'group name)))
           (unless folded (dolist (session group) (ashub--insert-row session sessions))))))
     (goto-char (point-min))
@@ -343,6 +348,7 @@
         (dolist (session items)
           (unless (equal (ashub-source-key (ashub-session-source session)) key)
             (error "Adapter returned a session from another source"))
+          (setf (ashub-session-cwd session) (ashub--relocate-cwd (ashub-session-cwd session)))
           (unless (gethash (ashub-session-key session) seen)
             (puthash (ashub-session-key session) t seen) (push session unique)))
         (when (seq-some (lambda (note) (eq (ashub-diagnostic-kind note) 'read)) diagnostics)
@@ -750,6 +756,22 @@ Keep the current project and search filters.  Never restore a session."
   (let ((cwd (ashub-session-cwd (ashub--session-at-point))))
     (unless cwd (user-error "该会话未记录项目目录")) (kill-new cwd) (message "已复制项目路径")))
 
+(defun ashub-relocate-project (old new)
+  "Persistently show and restore sessions recorded under OLD from NEW."
+  (interactive
+   (let* ((cwd (ashub-session-cwd (ashub--session-at-point)))
+          (old (read-directory-name "原项目目录（已改名/移动）：" cwd cwd)))
+     (list old (read-directory-name (format "%s 的新位置：" (abbreviate-file-name old)) nil nil t))))
+  (let ((old (directory-file-name (expand-file-name old)))
+        (new (directory-file-name (expand-file-name new))))
+    (unless (ashub--local-directory-p new) (user-error "新位置必须是现有的本地目录"))
+    (when (equal old new) (user-error "新旧目录相同"))
+    (customize-save-variable 'ashub-project-relocations
+                             (cons (cons old new)
+                                   (assoc-delete-all old (copy-alist ashub-project-relocations))))
+    (message "已保存：%s → %s" old new)
+    (ashub-refresh)))
+
 (defun ashub-diagnostics ()
   "Separate source failures, read issues and missing metadata."
   (interactive)
@@ -796,6 +818,7 @@ Keep the current project and search filters.  Never restore a session."
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
+                     ("R" . ashub-relocate-project)
                      ("!" . ashub-diagnostics) ("C" . ashub-clear-filters)
                      ("C-c C-k" . ashub-clear-filters)
                      ("q" . ashub-quit)))
