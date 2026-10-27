@@ -8,6 +8,9 @@
 (require 'ashub-core)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (declare-function emacs-pi-open-session "emacs-pi")
+(declare-function emacs-pi-fork-session-file "emacs-pi")
+(declare-function emacs-pi-session-session-file "emacs-pi-session" (session))
+(defvar emacs-pi--session)
 (declare-function emacs-dsh-open-session "emacs-dsh")
 (declare-function emacs-pi-create-session "emacs-pi")
 (declare-function emacs-dsh-create-session "emacs-dsh")
@@ -53,6 +56,123 @@
         (user-error "请选择现有的本地绝对目录；不支持 TRAMP 恢复"))
       (puthash key (file-name-as-directory (file-truename directory)) ashub--directory-overrides))
     (file-name-as-directory (file-truename directory))))
+
+(defun ashub--pi-read-header (path)
+  "Read a bounded JSONL session header from PATH, or signal an error."
+  (with-temp-buffer
+    (insert-file-contents path nil 0 65536)
+    (goto-char (point-min))
+    (unless (search-forward "\n" nil t)
+      (error "Pi session has no complete header line"))
+    (json-parse-string (buffer-substring-no-properties
+                        (point-min) (1- (point)))
+                       :object-type 'hash-table)))
+
+(defun ashub--pi-relocation-fork-needed-p (session directory)
+  "Whether SESSION must be forked because its relocated cwd is missing."
+  (let* ((path (ashub-session-path session))
+         (header (and (stringp path) (file-regular-p path)
+                      (ashub--pi-read-header path)))
+         (cwd (and header (gethash "cwd" header)))
+         (mapped (and (stringp cwd) (ashub--relocate-cwd cwd))))
+    (and (stringp cwd) (file-name-absolute-p cwd) (not (file-remote-p cwd))
+         (not (file-directory-p cwd))
+         (stringp mapped) (not (equal (expand-file-name mapped) (expand-file-name cwd)))
+         (ashub--local-directory-p mapped)
+         (equal (file-name-as-directory (file-truename mapped)) directory))))
+
+(defun ashub--pi-jsonl-records (path)
+  "Parse all non-header JSONL records in PATH, or return nil on malformed input."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (goto-char (point-min))
+    (unless (search-forward "\n" nil t) (error "Missing JSONL header"))
+    (let (records)
+      (while (< (point) (point-max))
+        (let ((start (point)))
+          (forward-line 1)
+          (let ((line (string-trim (buffer-substring-no-properties start (point)))))
+            (unless (string-empty-p line)
+              (push (json-parse-string line :object-type 'alist :array-type 'list
+                                       :null-object :null :false-object :false)
+                    records)))))
+      (nreverse records))))
+
+(defun ashub--pi-history-preserved-p (source fork)
+  "Whether every source record appears unchanged and in order at FORK's start."
+  (let* ((source-records (ashub--pi-jsonl-records source))
+         (fork-records (ashub--pi-jsonl-records fork))
+         (source-count (length source-records)))
+    (and (<= source-count (length fork-records))
+         (equal source-records (cl-subseq fork-records 0 source-count)))))
+
+(defun ashub--pi-fork-matches-session-p (source fork directory)
+  "Verify FORK is a live fork of SOURCE in DIRECTORY with all records intact."
+  (let* ((source-header (ashub--pi-read-header source))
+         (fork-header (ashub--pi-read-header fork))
+         (source-id (gethash "id" source-header))
+         (fork-id (gethash "id" fork-header))
+         (fork-cwd (gethash "cwd" fork-header)))
+    (and (stringp source-id) (stringp fork-id) (not (equal source-id fork-id))
+         (equal (gethash "type" source-header) "session")
+         (equal (gethash "type" fork-header) "session")
+         (equal (gethash "parentSession" fork-header) (file-truename source))
+         (stringp fork-cwd)
+         (equal (file-name-as-directory (file-truename fork-cwd)) directory)
+         (ashub--pi-history-preserved-p source fork))))
+
+(defun ashub--pi-detach-fork-parent (path)
+  "Atomically remove the parentSession reference from fork file PATH."
+  (let* ((header (ashub--pi-read-header path))
+         (temporary-file-directory (file-name-directory path))
+         (temporary (make-temp-file (expand-file-name ".ashub-fork-" temporary-file-directory)))
+         (mode (file-modes path)))
+    (unwind-protect
+        (progn
+          (remhash "parentSession" header)
+          (with-temp-buffer
+            (insert-file-contents path)
+            (goto-char (point-min))
+            (unless (search-forward "\n" nil t) (error "Missing fork header"))
+            (delete-region (point-min) (point))
+            (goto-char (point-min))
+            (insert (json-serialize header) "\n")
+            (write-region (point-min) (point-max) temporary nil 'silent))
+          (set-file-modes temporary mode)
+          (rename-file temporary path t)
+          (when (gethash "parentSession" (ashub--pi-read-header path))
+            (error "Could not clear fork parent reference")))
+      (when (file-exists-p temporary) (delete-file temporary)))))
+
+(defun ashub--pi-relocation-fork (session directory on-ready on-error)
+  "Fork a relocated Pi SESSION and delete its source only after verification."
+  (let ((source (ashub-session-path session))
+        (storage (ashub--root (plist-get (ashub-session-source session) :root))))
+    (if (not (and (fboundp 'emacs-pi-fork-session-file)
+                  (fboundp 'emacs-pi-session-session-file)))
+        (funcall on-error "Update emacs-pi: verified session-file fork API is required")
+      (emacs-pi-fork-session-file
+     source :directory directory :session-directory storage :display 'none
+     :on-ready
+     (lambda (buffer)
+       (condition-case err
+           (let ((fork (with-current-buffer buffer
+                         (emacs-pi-session-session-file emacs-pi--session))))
+             (unless (and (stringp fork) (file-regular-p fork)
+                          (not (file-equal-p source fork))
+                          (ashub--pi-fork-matches-session-p source fork directory))
+               (error "Fork did not preserve the complete original history"))
+             (ashub--pi-detach-fork-parent fork)
+             (unless (and (ashub--pi-history-preserved-p source fork)
+                          (not (gethash "parentSession" (ashub--pi-read-header fork))))
+               (error "Fork history or detached header did not verify"))
+             (delete-file source)
+             (funcall on-ready buffer))
+         (error
+          (funcall on-error
+                   (format "Pi relocation fork verification failed; original retained: %s"
+                           (error-message-string err))))))
+       :on-error on-error))))
 
 (defun ashub--terminal-command-for-source (source directory &optional id)
   "Build source-bound CLI argv; ID selects restore, nil selects a fresh session."
@@ -269,9 +389,11 @@ the agent has accepted the requested resume."
           ((eq agent 'pi)
            (require 'emacs-pi nil t)
            (unless (fboundp 'emacs-pi-open-session) (user-error "Load API-capable emacs-pi (emacs-pi-open-session missing)"))
-           (emacs-pi-open-session (ashub-session-path session) :directory directory
-                                  :session-directory (ashub--root (plist-get source :root))
-                                  :display 'none :on-ready ready :on-error error))
+           (if (ashub--pi-relocation-fork-needed-p session directory)
+               (ashub--pi-relocation-fork session directory ready error)
+             (emacs-pi-open-session (ashub-session-path session) :directory directory
+                                    :session-directory (ashub--root (plist-get source :root))
+                                    :display 'none :on-ready ready :on-error error)))
           ((eq agent 'dsh)
            (require 'emacs-dsh nil t)
            (unless (fboundp 'emacs-dsh-open-session) (user-error "Load API-capable emacs-dsh (emacs-dsh-open-session missing)"))
