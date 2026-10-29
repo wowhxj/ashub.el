@@ -273,7 +273,8 @@
                 (diagnostics (plist-get state :diagnostics))
                 (metadata-count (cl-count-if (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) diagnostics))
                 (read-count (- (length diagnostics) metadata-count)))
-           (when (eq status 'loading) (push label pending))
+           (when (eq status 'loading)
+             (push (if (plist-get state :cached) (concat label "（缓存待核验）") label) pending))
            (if (memq status '(error stale))
                (push (concat label (if (eq status 'stale) "（旧数据／刷新失败）" "")) failures)
              (when (> read-count 0) (push (format "%s（%d项）" label read-count) reads)))
@@ -374,7 +375,8 @@
 (defun ashub--accept-source (key items diagnostics failure)
   "Commit source KEY's ITEMS/DIAGNOSTICS, preserving old results on FAILURE."
   (let* ((state (gethash key ashub--states)) (old (plist-get state :items)))
-    (setf (plist-get state :cancel) nil (plist-get state :stale-keys) nil)
+    (setf (plist-get state :cancel) nil (plist-get state :stale-keys) nil
+          (plist-get state :cached) nil)
     (if failure
         (setf (plist-get state :status) (if (plist-get state :loaded) 'stale 'error)
               (plist-get state :diagnostics) (list failure))
@@ -409,6 +411,11 @@
     (dolist (source sources)
       (let* ((key (ashub-source-key source))
              (state (copy-sequence (and old (gethash key old)))))
+        (unless (plist-get state :loaded)
+          (when-let* ((cached (ashub-cached-source source)) (items (car cached)))
+            (dolist (session items)
+              (setf (ashub-session-cwd session) (ashub--relocate-cwd (ashub-session-cwd session))))
+            (setq state (list :items items :loaded t :cached t))))
         (setf (plist-get state :source) source (plist-get state :status) 'loading
               (plist-get state :diagnostics) nil (plist-get state :cancel) nil)
         (puthash key state ashub--states)))

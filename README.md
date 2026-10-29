@@ -89,6 +89,10 @@ Very long sessions keep their beginning and end and omit the middle (`ashub-refe
 
 ## Troubleshooting
 
+The first Pi scan reads session files and saves a summary index. With an updated emacs-pi providing `emacs-pi-cached-sessions`, the Hub displays cached sessions newest first on subsequent starts, including after restarting Emacs, while verifying added, changed and deleted files in the background. Only changed files are reparsed. The header marks these initial results as `缓存待核验` (cached, awaiting verification); existing Hub rows remain visible during refresh. Broken or unwritable indexes fall back safely without changing session files.
+
+Indexes live in `emacs-pi-history-cache-directory` (by default `emacs-pi/history-cache/` under the Emacs configuration directory). They contain paths, first/latest prompt previews and file signatures, with file permissions `0600`. Delete the index files to rebuild them, or set this variable to nil for memory-only caching. Older clients remain compatible but cannot preload summaries across restarts.
+
 If Pi or DSH is missing, press `!` and check that the loaded client provides `emacs-pi-list-sessions` or `emacs-dsh-list-sessions`. After upgrading VC-installed packages with `M-x package-vc-upgrade`, finish active chats and restart Emacs to load the new code.
 
 `[预览]` marks a projected message preview; `[标题]` marks a title, not the original message. DSH previews use the same `turnOutline` data as emacs-dsh. DSH dates use the interaction timestamp when available, otherwise `updatedAt` or `createdAt`, matching emacs-dsh. A `*` marks a source update/creation time rather than a verified interaction time; details show its origin.

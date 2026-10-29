@@ -9,6 +9,7 @@
 (require 'json)
 
 (declare-function emacs-pi-list-sessions "emacs-pi-history")
+(declare-function emacs-pi-cached-sessions "emacs-pi-history")
 (declare-function emacs-dsh-list-sessions "emacs-dsh")
 
 (defconst ashub--scanner-file
@@ -90,7 +91,7 @@
                                   (error (push (error-message-string bad) diagnostics))))
                                ("diagnostic"
                                 (push (list :kind (if (equal (plist-get value :category) "metadata")
-                                                       'metadata 'read)
+                                                      'metadata 'read)
                                             :path (plist-get value :path)
                                             :message (plist-get value :message)) diagnostics))
                                ("fatal" (setq fatal (plist-get value :message)))
@@ -150,39 +151,57 @@
       (error "Missing %s (%s). Install/update %s with M-x package-vc-upgrade, then restart Emacs after ending active chats; Hub will not replace loaded clients"
              function file package))))
 
+(defun ashub--pi-result (source result)
+  "Normalize Pi RESULT from SOURCE into (ITEMS DIAGNOSTICS)."
+  (let (items (diagnostics (copy-sequence (plist-get result :diagnostics))))
+    (dolist (raw (plist-get result :items))
+      (condition-case bad
+          (let ((id (plist-get raw :id)) (path (plist-get raw :path)))
+            (unless (and (stringp id) (stringp path)) (error "Missing Pi ID/path"))
+            (when (and (plist-get raw :source)
+                       (not (equal (ashub--root (plist-get raw :source))
+                                   (ashub--root (plist-get source :root)))))
+              (error "Pi returned a different storage source"))
+            (push (ashub-session-create
+                   :agent 'pi :source source :id id :path path
+                   :cwd (plist-get raw :cwd) :first-message (plist-get raw :preview)
+                   :last-active (ashub--seconds (plist-get raw :modified))
+                   :time-source (plist-get raw :time-source)
+                   :internal (if (plist-member raw :internal) (plist-get raw :internal) 'unknown)
+                   :empty (if (plist-member raw :empty) (plist-get raw :empty) 'unknown)
+                   :archived (if (plist-member raw :archived) (plist-get raw :archived) 'unknown)
+                   :title (plist-get raw :name)
+                   :metadata
+                   (append (list :reference
+                                 (list :first (plist-get raw :preview)
+                                       :last (plist-get raw :last-preview)
+                                       :last-user-time
+                                       (ashub--seconds (plist-get raw :last-user-time))))
+                           raw)) items))
+        (error (push (error-message-string bad) diagnostics))))
+    (list (nreverse items) diagnostics)))
+
+(defun ashub-cached-source (source)
+  "Return cached (ITEMS DIAGNOSTICS) for SOURCE, or nil when unavailable.
+Only the built-in Pi adapter currently supports startup summaries.
+Older clients and custom scan functions keep their existing behavior."
+  (when (and (eq (plist-get source :agent) 'pi)
+             (not (plist-get source :scan-function)))
+    (condition-case nil
+        (progn
+          (require 'emacs-pi-history nil t)
+          (when (fboundp 'emacs-pi-cached-sessions)
+            (ashub--pi-result
+             source (emacs-pi-cached-sessions (list (ashub--root (plist-get source :root)))))))
+      (error nil))))
+
 (defun ashub--scan-pi (source callback on-error)
   "Enumerate Pi SOURCE through its public API using CALLBACK and ON-ERROR."
   (ashub--require-client-api 'emacs-pi-history 'emacs-pi-list-sessions 'emacs-pi)
   (emacs-pi-list-sessions
    (lambda (result)
      (condition-case err
-         (let (items (diagnostics (copy-sequence (plist-get result :diagnostics))))
-           (dolist (raw (plist-get result :items))
-             (condition-case bad
-                 (let ((id (plist-get raw :id)) (path (plist-get raw :path)))
-                   (unless (and (stringp id) (stringp path)) (error "Missing Pi ID/path"))
-                   (when (and (plist-get raw :source)
-                              (not (equal (ashub--root (plist-get raw :source))
-                                          (ashub--root (plist-get source :root)))))
-                     (error "Pi returned a different storage source"))
-                   (push (ashub-session-create
-                          :agent 'pi :source source :id id :path path
-                          :cwd (plist-get raw :cwd) :first-message (plist-get raw :preview)
-                          :last-active (ashub--seconds (plist-get raw :modified))
-                          :time-source (plist-get raw :time-source)
-                          :internal (if (plist-member raw :internal) (plist-get raw :internal) 'unknown)
-                          :empty (if (plist-member raw :empty) (plist-get raw :empty) 'unknown)
-                          :archived (if (plist-member raw :archived) (plist-get raw :archived) 'unknown)
-                          :title (plist-get raw :name)
-                          :metadata
-                          (append (list :reference
-                                        (list :first (plist-get raw :preview)
-                                              :last (plist-get raw :last-preview)
-                                              :last-user-time
-                                              (ashub--seconds (plist-get raw :last-user-time))))
-                                  raw)) items))
-               (error (push (error-message-string bad) diagnostics))))
-           (funcall callback (nreverse items) diagnostics))
+         (apply callback (ashub--pi-result source result))
        (error (funcall on-error (error-message-string err)))))
    :directories (list (ashub--root (plist-get source :root))) :on-error on-error))
 

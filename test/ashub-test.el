@@ -219,6 +219,70 @@
     (ashub-test-wait (lambda () (= calls 1)))
     (should cancelled)))
 
+(ert-deftest ashub-pi-startup-renders-cached-order-before-scan ()
+  (ashub-test-with-hub
+   (let* ((source (ashub-test-source 'pi))
+          (ashub-sources (list source))
+          (key (ashub-source-key source)) callback)
+     (cl-letf (((symbol-function 'emacs-pi-cached-sessions)
+                (lambda (directories)
+                  (should (equal directories (list (ashub--root (plist-get source :root)))))
+                  (list :cached t :items
+                        (list (list :id "older" :path "/older.jsonl" :cwd "/older"
+                                    :preview "old" :modified (seconds-to-time 1))
+                              (list :id "newer" :path "/newer.jsonl" :cwd "/newer"
+                                    :preview "new" :modified (seconds-to-time 2))))))
+               ((symbol-function 'ashub-scan-source)
+                (lambda (_source cb _error)
+                  ;; Cached rows must already be rendered when scanning starts.
+                  (should (string-match-p "new" (buffer-string)))
+                  (setq callback cb)
+                  #'ignore)))
+       (ashub-refresh)
+       (should (equal (mapcar #'ashub-session-id (ashub--visible-sessions)) '("newer" "older")))
+       (should (eq (plist-get (gethash key ashub--states) :status) 'loading))
+       (should (plist-get (gethash key ashub--states) :cached))
+       (should (string-match-p "缓存待核验" ashub--status))
+       ;; A verified result may update dates, remove deleted files and add sessions.
+       (funcall callback (list (ashub-test-session :agent 'pi :source source :id "verified")) nil)
+       (should (equal (mapcar #'ashub-session-id (ashub--visible-sessions)) '("verified")))
+       (should-not (plist-get (gethash key ashub--states) :cached))
+       (should-not (string-match-p "缓存待核验" ashub--status))))))
+
+(ert-deftest ashub-pi-startup-preserves-cache-on-scan-failure ()
+  (ashub-test-with-hub
+   (let* ((source (ashub-test-source 'pi)) (ashub-sources (list source)) failure)
+     (cl-letf (((symbol-function 'emacs-pi-cached-sessions)
+                (lambda (&rest _)
+                  '(:items ((:id "cached" :path "/cached.jsonl" :preview "cached")))))
+               ((symbol-function 'ashub-scan-source)
+                (lambda (_source _callback on-error) (setq failure on-error) #'ignore)))
+       (ashub-refresh)
+       (funcall failure "temporary error")
+       (should (equal (ashub-session-id (car (ashub--all-sessions))) "cached"))
+       (should (eq (plist-get (gethash (ashub-source-key source) ashub--states) :status) 'stale))))))
+
+(ert-deftest ashub-pi-cache-does-not-replace-loaded-results ()
+  (ashub-test-with-hub
+   (let* ((source (ashub-test-source 'pi)) (ashub-sources (list source)))
+     (ashub-test-install (list (ashub-test-session :agent 'pi :source source :id "current")))
+     (cl-letf (((symbol-function 'emacs-pi-cached-sessions)
+                (lambda (&rest _) (ert-fail "Already loaded results should be retained")))
+               ((symbol-function 'ashub-scan-source) (lambda (&rest _) #'ignore)))
+       (ashub-refresh)
+       (should (equal (ashub-session-id (car (ashub--all-sessions))) "current"))))))
+
+(ert-deftest ashub-pi-cache-is-optional-and-does-not-bypass-custom-adapters ()
+  (let ((source (ashub-test-source 'pi)))
+    (cl-letf (((symbol-function 'emacs-pi-cached-sessions) nil))
+      (should-not (ashub-cached-source source)))
+    (cl-letf (((symbol-function 'emacs-pi-cached-sessions)
+               (lambda (&rest _) (error "Broken cache"))))
+      (should-not (ashub-cached-source source)))
+    (cl-letf (((symbol-function 'emacs-pi-cached-sessions)
+               (lambda (&rest _) (ert-fail "Custom adapters must not read Pi cache"))))
+      (should-not (ashub-cached-source (append source (list :scan-function #'ignore)))))))
+
 (ert-deftest ashub-pi-enumeration-is-public-api-only ()
   (let ((source (ashub-test-source 'pi)) result)
     (cl-letf (((symbol-function 'emacs-pi-list-sessions)
