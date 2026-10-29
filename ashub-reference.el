@@ -18,6 +18,8 @@
 (defvar ashub--states)
 (defvar emacs-pi-reference-providers)
 (defvar emacs-dsh-reference-providers)
+(defvar vertico-group-format)
+(defvar orderless-smart-case)
 (declare-function ashub-mode "ashub")
 (declare-function ashub-refresh "ashub")
 (declare-function ashub--all-sessions "ashub")
@@ -145,7 +147,13 @@ START returns a cancel function, called if waiting is interrupted."
   (require 'ashub)
   (with-current-buffer (get-buffer-create "*ashub*")
     (unless (derived-mode-p 'ashub-mode) (ashub-mode))
-    (when (zerop (hash-table-count ashub--states)) (ashub-refresh))
+    (when (or (zerop (hash-table-count ashub--states))
+              ;; Refresh pre-upgrade cached records once, without changing structs.
+              (seq-some (lambda (session)
+                          (and (not (plist-get (ashub-session-source session) :scan-function))
+                               (not (plist-member (ashub-session-metadata session) :reference))))
+                        (ashub--all-sessions)))
+      (ashub-refresh))
     (let ((deadline (+ (float-time) ashub-scan-timeout)))
       (while (and (< (float-time) deadline)
                   (let (loading)
@@ -159,34 +167,88 @@ START returns a cancel function, called if waiting is interrupted."
      (seq-filter (lambda (session) (ashub-session-visible-p session nil nil ""))
                  (ashub--all-sessions)))))
 
-(defun ashub-reference--label (session sessions)
-  "Return a one-line completion label for SESSION among SESSIONS."
-  (format "%-6s %-16s  %s  %s  %s"
-          (ashub-session-agent session)
-          (if-let* ((seconds (ashub-session-last-active session)))
-              (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
-            "时间未知")
-          (ashub--middle (ashub-session-project session) 28)
-          (truncate-string-to-width (ashub--one-line (ashub--preview-text session)) 60 nil nil "…")
-          (ashub-short-id session sessions)))
+(defun ashub-reference--user-time (session)
+  "Return SESSION's last user message time in seconds, or nil if unknown."
+  (plist-get (plist-get (ashub-session-metadata session) :reference) :last-user-time))
+
+(defun ashub-reference--column (text width &optional face)
+  "Make TEXT a single-line column of display WIDTH, optionally using FACE."
+  (let* ((clean (string-trim (ashub--one-line text)))
+         (column (truncate-string-to-width (if (string-empty-p clean) "—" clean)
+                                           width nil ?\s "…")))
+    (if face (propertize column 'face face) column)))
+
+(defun ashub-reference--choices (sessions &optional width)
+  "Return aligned reference choices for SESSIONS within display WIDTH.
+Keep Agent visible; narrow windows hide the project, not the user queries."
+  (let* ((records (cl-stable-sort (copy-sequence sessions)
+                                  (lambda (a b)
+                                    (> (or (ashub-reference--user-time a) 0)
+                                       (or (ashub-reference--user-time b) 0)))))
+         (width (or width (- (window-body-width (minibuffer-window)) 4)))
+         (id-width (apply #'max 12
+                          (mapcar (lambda (session)
+                                    (length (ashub-short-id session sessions))) sessions)))
+         (project-width (if (>= width 120) (min 30 (/ width 6)) 0))
+         (query-space (max 16 (- width 16 6 id-width 12
+                                (if (> project-width 0) (+ project-width 3) 0))))
+         (first-width (/ query-space 2))
+         (last-width (- query-space first-width))
+         (seen (make-hash-table :test #'equal))
+         (row (lambda (time agent first last project id &optional heading)
+                (string-join
+                 (append
+                  (list (ashub-reference--column time 16)
+                        (ashub-reference--column agent 6 (unless heading 'font-lock-type-face))
+                        (ashub-reference--column first first-width)
+                        (ashub-reference--column last last-width))
+                  (when (> project-width 0)
+                    (list (ashub-reference--column
+                           (ashub--middle (or project "—") project-width)
+                           project-width (unless heading 'shadow))))
+                  (list (ashub-reference--column id id-width (unless heading 'shadow))))
+                 (propertize " │ " 'face 'shadow))))
+         (header (funcall row "最后交互" "Agent" "用户首句" "用户末句" "项目" "ID" t)))
+    (cl-loop for session in records
+             for summary = (plist-get (ashub-session-metadata session) :reference)
+             for stamp = (ashub-reference--user-time session)
+             for agent = (ashub-session-agent session)
+             for label = (funcall row
+                                  (if stamp (format-time-string "%Y-%m-%d %H:%M"
+                                                                 (seconds-to-time stamp)) "—")
+                                  (or (alist-get agent '((claude . "Claude") (codex . "Codex")
+                                                        (pi . "Pi") (dsh . "DSH") (hermes . "Hermes")))
+                                      (symbol-name agent))
+                                  (or (plist-get summary :first)
+                                      (ashub-session-first-message session))
+                                  (plist-get summary :last)
+                                  (when-let* ((cwd (ashub-session-project session)))
+                                    (abbreviate-file-name cwd))
+                                  (ashub-short-id session sessions))
+             for count = (puthash label (1+ (gethash label seen 0)) seen)
+             collect (cons (propertize (if (> count 1) (format "%s #%d" label count) label)
+                                       'ashub-reference-header header)
+                           session))))
 
 (defun ashub-reference-read-session ()
-  "Choose a saved session from every configured agent, newest first."
+  "Choose a saved session from every agent, newest user interaction first."
   (let* ((sessions (or (ashub-reference--sessions)
                        (user-error "没有可引用的会话；M-x ashub 后按 ! 查看诊断")))
-         (seen (make-hash-table :test #'equal))
-         (choices (mapcar (lambda (session)
-                            (let* ((label (ashub-reference--label session sessions))
-                                   (count (puthash label (1+ (gethash label seen 0)) seen)))
-                              (cons (if (> count 1) (format "%s #%d" label count) label) session)))
-                          sessions))
-         (table (lambda (string predicate action)
-                  (if (eq action 'metadata)
-                      '(metadata (category . ashub-session)
-                                 (display-sort-function . identity)
-                                 (cycle-sort-function . identity))
-                    (complete-with-action action choices string predicate)))))
-    (cdr (assoc (completing-read "引用会话：" table nil t) choices))))
+         (choices (ashub-reference--choices sessions))
+         (header (get-text-property 0 'ashub-reference-header (caar choices)))
+         (table (completion-table-with-metadata
+                 choices
+                 `((category . ashub-session)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity)
+                   (group-function . ,(lambda (candidate transform)
+                                        (if transform candidate header))))))
+         (vertico-group-format "%s")
+         (completion-ignore-case t)
+         (orderless-smart-case nil)
+         (completion-styles (append completion-styles
+                                    (unless (memq 'substring completion-styles) '(substring)))))
+    (cdr (assoc (completing-read "引用会话（所有 Agent）：" table nil t) choices))))
 
 ;;;###autoload
 (defun ashub-reference-provider (&optional _root)

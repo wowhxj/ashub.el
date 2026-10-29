@@ -46,6 +46,8 @@ class ScannerTests(unittest.TestCase):
         self.assertFalse(errors)
         self.assertEqual(items[0]["first_message"], text)
         self.assertEqual(items[0]["last_active"], scan.timestamp("2026-01-02T00:00:00Z"))
+        self.assertEqual(items[0]["last_user_message"], text)
+        self.assertEqual(items[0]["last_user_time"], scan.timestamp("2026-01-01T00:00:00Z"))
         self.assertFalse(items[0]["empty"])
 
     def test_claude_image_first_not_replaced_and_tools_not_user(self):
@@ -129,6 +131,8 @@ class ScannerTests(unittest.TestCase):
         items, errors = self.capture(scan.codex)
         self.assertFalse(errors)
         self.assertEqual(items[0]["first_message"], "Desktop first")
+        self.assertEqual(items[0]["last_user_message"], "later")
+        self.assertEqual(items[0]["last_user_time"], 1767225700)
         self.assertEqual(items[0]["last_active"], 1767225705)
         self.assertFalse(items[0]["empty"])
 
@@ -145,7 +149,42 @@ class ScannerTests(unittest.TestCase):
         items, _ = self.capture(scan.codex)
         self.assertTrue(items[0]["internal"])
         self.assertEqual(items[0]["first_message"], "actual user")
+        self.assertEqual(items[0]["last_user_message"], "actual user")
+        self.assertEqual(items[0]["last_user_time"], scan.timestamp("2026-01-01T00:00:00Z"))
         self.assertEqual(items[0]["last_active"], scan.timestamp("2026-01-01T00:01:00Z"))
+
+    def test_codex_reference_tracks_newer_rollout_users_not_assistant_activity(self):
+        rollout = self.root / "sessions/new.jsonl"
+        self.codex_db(rollout=rollout)
+        self.codex_history()
+        reply = dict(type="event_msg", timestamp="2026-01-01T00:12:00Z",
+                     payload=dict(type="agent_message", message="later reply"))
+        self.log(rollout, [reply])
+        items, errors = self.capture(scan.codex)
+        self.assertFalse(errors)
+        self.assertEqual(items[0]["last_user_message"], "later")
+        self.assertEqual(items[0]["last_user_time"], 1767225700)
+        self.log(rollout, [
+            dict(type="event_msg", timestamp="2026-01-01T00:11:00Z",
+                 payload=dict(type="user_message", message="new rollout query")), reply])
+        items, errors = self.capture(scan.codex)
+        self.assertFalse(errors)
+        self.assertEqual(items[0]["first_message"], "Desktop first")
+        self.assertEqual(items[0]["last_user_message"], "new rollout query")
+        self.assertEqual(items[0]["last_user_time"], scan.timestamp("2026-01-01T00:11:00Z"))
+
+    def test_latest_user_without_timestamp_does_not_inherit_older_time(self):
+        messages = scan.Messages()
+        messages.add("user", "first query", 1)
+        messages.add("assistant", "reply", 99)
+        messages.add("user", "latest undated query", None)
+        messages.add("assistant", "later reply", 100)
+        item = scan.record("undated")
+        messages.apply(item)
+        self.assertEqual(item["first_message"], "first query")
+        self.assertEqual(item["last_user_message"], "latest undated query")
+        self.assertIsNone(item["last_user_time"])
+        self.assertEqual(item["last_active"], 100)
 
     def test_codex_image_event_not_empty(self):
         rollout = self.root / "sessions/a.jsonl"
@@ -161,6 +200,8 @@ class ScannerTests(unittest.TestCase):
         items, errors = self.capture(scan.codex)
         self.assertTrue(errors)
         self.assertIsNone(items[0]["first_message"])
+        self.assertIsNone(items[0]["last_user_message"])
+        self.assertIsNone(items[0]["last_user_time"])
         self.assertIsNone(items[0]["last_active"])
         self.assertEqual(items[0]["empty"], "unknown")
         self.assertTrue(items[0]["archived"])
@@ -192,6 +233,8 @@ class ScannerTests(unittest.TestCase):
             ("user", "compressed", 200, None, 1, 1, 0)])
         items, _ = self.capture(scan.hermes)
         self.assertEqual(items[0]["first_message"], "real first")
+        self.assertEqual(items[0]["last_user_message"], "real first")
+        self.assertEqual(items[0]["last_user_time"], 3)
         self.assertEqual(items[0]["last_active"], 4)
         self.assertIsNone(items[0]["cwd"])
         self.assertEqual(items[0]["origin"], "telegram")

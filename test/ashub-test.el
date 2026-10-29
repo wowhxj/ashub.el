@@ -225,11 +225,18 @@
                (lambda (callback &rest args)
                  (should (equal (plist-get args :directories) (list (ashub--root temporary-file-directory))))
                  (funcall callback (list :items (list (list :id "pi-id" :path "/session.jsonl"
-                                                            :preview "original" :empty nil
+                                                            :preview "original" :last-preview "latest"
+                                                            :last-user-time (seconds-to-time 3)
+                                                            :modified (seconds-to-time 9) :empty nil
                                                             :internal 'unknown :archived 'unknown))))
                  #'ignore)))
       (ashub--scan-pi source (lambda (items _diagnostics) (setq result items)) #'ert-fail)
       (should (equal (ashub-session-first-message (car result)) "original"))
+      (let ((summary (plist-get (ashub-session-metadata (car result)) :reference)))
+        (should (equal (plist-get summary :first) "original"))
+        (should (equal (plist-get summary :last) "latest"))
+        (should (= (plist-get summary :last-user-time) 3)))
+      (should (= (ashub-session-last-active (car result)) 9))
       (should-not (ashub-session-empty (car result))))))
 
 (ert-deftest ashub-dsh-title-and-updatedAt-not-faked-as-message ()
@@ -1320,9 +1327,12 @@
     (unwind-protect
         (with-current-buffer buffer
           (ashub-mode)
-          (let ((old (ashub-test-session :id "old-session" :last-active 1 :first-message "old"))
-                (new (ashub-test-session :id "new-session" :last-active 2 :first-message "new"))
-                (hidden (ashub-test-session :id "sub-agent" :internal t)))
+          (let ((old (ashub-test-session :id "old-session" :last-active 99 :first-message "old"
+                                          :metadata '(:reference (:last "old last" :last-user-time 1))))
+                (new (ashub-test-session :id "new-session" :last-active 2 :first-message "new"
+                                          :metadata '(:reference (:last "new last" :last-user-time 2))))
+                (hidden (ashub-test-session :id "sub-agent" :internal t :metadata '(:reference nil)))
+                (original-format (bound-and-true-p vertico-group-format)))
             (ashub-test-install (list old new hidden))
             (cl-letf (((symbol-function 'ashub-refresh) (lambda () (ert-fail "Loaded Hub rescanned")))
                       ((symbol-function 'completing-read)
@@ -1331,8 +1341,19 @@
                          (should (eq (completion-metadata-get
                                       (completion-metadata "" table nil) 'display-sort-function)
                                      #'identity))
+                         (let* ((metadata (completion-metadata "" table nil))
+                                (group (completion-metadata-get metadata 'group-function))
+                                (header (funcall group (car offered) nil)))
+                           (should (equal (bound-and-true-p vertico-group-format) "%s"))
+                           (should (string-match-p "Agent" header))
+                           (should (string-match-p "用户末句" header))
+                           (when (fboundp 'vertico--format-group-title)
+                             (should (equal (substring-no-properties
+                                             (funcall 'vertico--format-group-title header (car offered)))
+                                            (concat (substring-no-properties header) "\n")))))
                          (cadr offered))))
               (should (eq (ashub-reference-read-session) old))
+              (should (equal (bound-and-true-p vertico-group-format) original-format))
               (should (= (length offered) 2))
               (should (string-match-p "new" (car offered))))))
       (kill-buffer buffer))))
@@ -1489,6 +1510,97 @@
              (should (string-match-p "目录缺失：R 重定向" (buffer-string))))
            (should-not (ashub-session-cwd-missing-p (ashub-test-session :cwd new)))))
       (delete-directory root t))))
+
+(ert-deftest ashub-reference-native-summary-keeps-user-and-activity-times-separate ()
+  (let* ((session (ashub--json-session
+                   (ashub-test-source)
+                   '(:id "native" :first_message "first" :last_user_message "latest"
+                     :last_user_time 3 :last_active 9 :title "Not a query")))
+         (summary (plist-get (ashub-session-metadata session) :reference)))
+    (should (equal (plist-get summary :first) "first"))
+    (should (equal (plist-get summary :last) "latest"))
+    (should (= (plist-get summary :last-user-time) 3))
+    (should (= (ashub-session-last-active session) 9))
+    (should-error (ashub--json-session (ashub-test-source)
+                                      '(:id "invalid" :last_user_message 12)))))
+
+(ert-deftest ashub-reference-dsh-public-list-provides-previews-and-last-prompt-time ()
+  (let (sessions)
+    (cl-letf (((symbol-function 'emacs-dsh-list-sessions)
+               (lambda (callback &rest _)
+                 (funcall callback
+                          '(:source ("host" "nonce" desktop)
+                            :items (((sessionId . "dsh-id") (updatedAt . 999)
+                                     (projections
+                                      (values (title . "Generated title")
+                                              (turnOutline . [((prompt . "")) ((prompt . "first preview"))
+                                                              ((prompt . "latest preview…")) ((prompt . ""))])
+                                              (sessionListMetadata (lastPromptAt . 1792486800000))))))))
+                 #'ignore)))
+      (ashub--scan-dsh '(:agent dsh :root "configured-host")
+                       (lambda (items _errors) (setq sessions items)) #'ert-fail))
+    (let ((summary (plist-get (ashub-session-metadata (car sessions)) :reference)))
+      (should (equal (plist-get summary :first) "first preview"))
+      (should (equal (plist-get summary :last) "latest preview…"))
+      (should (= (plist-get summary :last-user-time) 1792486800))
+      (should-not (ashub-session-first-message (car sessions)))
+      (should-not (ashub-session-last-active (car sessions))))))
+
+(ert-deftest ashub-reference-agent-and-query-columns-align-at-every-width ()
+  (let ((sessions
+         (append
+          (cl-loop for agent in '(claude codex pi dsh hermes) for stamp from 1
+                   collect (ashub-test-session
+                            :agent agent :id (format "%s-session" agent)
+                            :cwd "/a/long/project/directory" :last-active (- 100 stamp)
+                            :metadata (list :reference
+                                            (list :first (concat "首句中文\n" (make-string 100 ?中))
+                                                  :last "末句中文\tDone" :last-user-time stamp))))
+          (list (ashub-test-session :id "unknown-session" :first-message nil
+                                    :title "Not a user query" :last-active 9999
+                                    :metadata '(:reference nil))))))
+    (dolist (width '(64 80 120 180 240))
+      (let* ((choices (ashub-reference--choices sessions width))
+             (header (get-text-property 0 'ashub-reference-header (caar choices)))
+             (widths (mapcar #'string-width (split-string header " │ "))))
+        (should (eq (ashub-session-agent (cdar choices)) 'hermes))
+        (should (string-prefix-p "—" (car (car (last choices)))))
+        (dolist (choice choices)
+          (should (equal (mapcar #'string-width (split-string (car choice) " │ ")) widths))
+          (should (<= (string-width (car choice)) width))
+          (should-not (string-match-p "[\n\r\t]" (car choice)))
+          (should-not (string-match-p "Not a user query" (car choice))))
+        (dolist (agent '("Claude" "Codex" "Pi" "DSH" "Hermes"))
+          (should (seq-some (lambda (choice) (string-match-p agent (car choice))) choices)))
+        (should (= (length widths) (if (>= width 120) 6 5)))))))
+
+(ert-deftest ashub-reference-duplicate-profile-labels-preserve-exact-session ()
+  (let* ((first (ashub-test-session :source (ashub-test-source 'claude "/source-one")))
+         (second (ashub-test-session :source (ashub-test-source 'claude "/source-two")))
+         (choices (ashub-reference--choices (list first second) 180)))
+    (should (= (length choices) 2))
+    (should-not (equal (caar choices) (car (cadr choices))))
+    (cl-letf (((symbol-function 'ashub-reference--sessions) (lambda () (list first second)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _) (cadr (all-completions "" table)))))
+      (should (eq (ashub-reference-read-session) second)))))
+
+(ert-deftest ashub-reference-refreshes-pre-upgrade-cache-once ()
+  (let ((buffer (get-buffer-create "*ashub*")) (refreshes 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (ashub-mode)
+          (let ((session (ashub-test-session)))
+            (ashub-test-install (list session))
+            (cl-letf (((symbol-function 'ashub-refresh)
+                       (lambda ()
+                         (cl-incf refreshes)
+                         (setf (ashub-session-metadata session)
+                               '(:reference (:first "first" :last "latest" :last-user-time 1))))))
+              (should (equal (ashub-reference--sessions) (list session)))
+              (should (equal (ashub-reference--sessions) (list session)))
+              (should (= refreshes 1)))))
+      (kill-buffer buffer))))
 
 (provide 'ashub-test)
 ;; Local Variables:

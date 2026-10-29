@@ -83,7 +83,7 @@
 (global-set-key (kbd "C-c @") #'ashub-insert-reference)
 ```
 
-按 `C-c @` 后，从所有 agent 的会话中（最新的在前）选一个。ashub 把它的用户和助手文本（不含工具调用）导出为 `~/.cache/ashub/refs/` 下的私有 Markdown 文件，再往当前输入区插入文件引用：ghostel 终端（Claude、Codex、Hermes）粘贴 `@路径`，Pi 和 DSH 插入各自的 @文件引用。在 Pi、DSH 聊天里也可以输入 `@ashub` 后按 `TAB`；这需要客户端提供 `emacs-pi-reference-providers` / `emacs-dsh-reference-providers`，引用 DSH 会话还需要 `emacs-dsh-read-session`。提交前不会发送任何内容。
+按 `C-c @` 或在 Pi/DSH 中输入 `@ashub` 后按 `TAB`，列表按「**最后交互｜Agent｜用户首句｜用户末句｜项目｜ID**」对齐，按最后一次用户发消息的时间倒序排列。窄窗口自动隐藏项目列，保留 Agent 和首末消息。时间使用本地时区，不拿助手活动、文件时间或生成标题代替缺失的用户数据；未知字段显示 `—`。DSH 的 query 预览可能已被 Host 截断；升级前已缓存的会话数据会在首次打开选择器时自动刷新，Vertico 标题对齐仅在此选择器内生效。选择后，ashub 把它的用户和助手文本（不含工具调用）导出为 `~/.cache/ashub/refs/` 下的私有 Markdown 文件，再往当前输入区插入文件引用：ghostel 终端（Claude、Codex、Hermes）粘贴 `@路径`，Pi 和 DSH 插入各自的 @文件引用。在 Pi、DSH 聊天里也可以输入 `@ashub` 后按 `TAB`；这需要客户端提供 `emacs-pi-reference-providers` / `emacs-dsh-reference-providers`，引用 DSH 会话还需要 `emacs-dsh-read-session`。提交前不会发送任何内容。
 
 超长会话保留开头和结尾、省略中间（`ashub-reference-max-chars`）。DSH 引用最多包含最近 `ashub-reference-dsh-max-messages` 条消息，因为 Host 不提供更早的分页。也可以脱离 Emacs 导出：`python3 ashub-scan.py export claude ~/.claude SESSION-ID`。
 

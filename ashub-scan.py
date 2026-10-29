@@ -81,7 +81,8 @@ def turn_text(content):
 
 def record(session_id, path=None):
     return dict(id=session_id, path=str(path) if path else None, cwd=None,
-                first_message=None, last_active=None, time_source=None,
+                first_message=None, last_user_message=None, last_user_time=None,
+                last_active=None, time_source=None,
                 internal=UNKNOWN, empty=UNKNOWN, archived=UNKNOWN,
                 origin=None, title=None)
 
@@ -89,6 +90,8 @@ def record(session_id, path=None):
 class Messages:
     def __init__(self):
         self.first = None
+        self.last_user_message = None
+        self.last_user_time = None
         self.last = None
         self.users = 0
         self.complete = True
@@ -98,11 +101,13 @@ class Messages:
     def add(self, role, content, time):
         if role not in ("user", "assistant"):
             return
+        time = timestamp(time)
         if role == "user":
             if not self.users and self.complete:
                 self.first = content_text(content)
             self.users += 1
-        time = timestamp(time)
+            self.last_user_message = content_text(content)
+            self.last_user_time = time
         if time:
             self.last = max(self.last or time, time)
         if EXPORT is not None:
@@ -119,7 +124,9 @@ class Messages:
                 self.turns.append(dict(role=role, text=text, time=time))
 
     def apply(self, item):
-        item.update(first_message=self.first, last_active=self.last,
+        item.update(first_message=self.first,
+                    last_user_message=self.last_user_message,
+                    last_user_time=self.last_user_time, last_active=self.last,
                     time_source=self.time_source if self.last else None,
                     empty=False if self.users else (True if self.complete else UNKNOWN))
 
@@ -335,9 +342,14 @@ def codex(root):
                 rollout = codex_rollout(path)
                 if messages is None:
                     messages = rollout
-                elif rollout.last and rollout.last > (messages.last or 0):
-                    messages.last = rollout.last
-                    messages.time_source = "message"
+                else:
+                    if rollout.last and rollout.last > (messages.last or 0):
+                        messages.last = rollout.last
+                        messages.time_source = "message"
+                    if (rollout.last_user_time and
+                            rollout.last_user_time > (messages.last_user_time or 0)):
+                        messages.last_user_message = rollout.last_user_message
+                        messages.last_user_time = rollout.last_user_time
             elif messages is None:
                 diagnostic(row["id"], "No readable rollout or complete thread history; metadata only", category="metadata")
             if messages:

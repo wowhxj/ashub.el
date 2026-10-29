@@ -38,7 +38,7 @@
   "Normalize worker VALUE from SOURCE into a session."
   (unless (and (stringp (plist-get value :id)) (not (string-empty-p (plist-get value :id))))
     (error "Missing full session ID"))
-  (dolist (field '(:path :cwd :first_message :title))
+  (dolist (field '(:path :cwd :first_message :last_user_message :title))
     (unless (or (null (plist-get value field)) (stringp (plist-get value field)))
       (error "Invalid scanner text field: %s" field)))
   (ashub-session-create
@@ -50,7 +50,11 @@
    :internal (ashub--state-value (plist-get value :internal))
    :empty (ashub--state-value (plist-get value :empty))
    :archived (ashub--state-value (plist-get value :archived))
-   :origin (plist-get value :origin) :title (plist-get value :title)))
+   :origin (plist-get value :origin) :title (plist-get value :title)
+   :metadata (list :reference
+                   (list :first (plist-get value :first_message)
+                         :last (plist-get value :last_user_message)
+                         :last-user-time (ashub--seconds (plist-get value :last_user_time))))))
 
 (defun ashub--scan-local (source callback on-error)
   "Scan SOURCE in a subprocess; use CALLBACK or ON-ERROR exactly once."
@@ -170,7 +174,13 @@
                           :empty (if (plist-member raw :empty) (plist-get raw :empty) 'unknown)
                           :archived (if (plist-member raw :archived) (plist-get raw :archived) 'unknown)
                           :title (plist-get raw :name)
-                          :metadata raw) items))
+                          :metadata
+                          (append (list :reference
+                                        (list :first (plist-get raw :preview)
+                                              :last (plist-get raw :last-preview)
+                                              :last-user-time
+                                              (ashub--seconds (plist-get raw :last-user-time))))
+                                  raw)) items))
                (error (push (error-message-string bad) diagnostics))))
            (funcall callback (nreverse items) diagnostics))
        (error (funcall on-error (error-message-string err)))))
@@ -199,9 +209,21 @@
                         (count (alist-get 'userMessageCount raw))
                         (values (alist-get 'values (alist-get 'projections raw)))
                         (outline (alist-get 'turnOutline values))
-                        (turn (and (or (listp outline) (vectorp outline))
-                                   (> (length outline) 0) (elt outline 0)))
-                        (prompt (and (listp turn) (alist-get 'prompt turn)))
+                        (prompts (and (or (listp outline) (vectorp outline))
+                                      (delq nil
+                                            (mapcar
+                                             (lambda (turn)
+                                               (let ((text (and (listp turn)
+                                                                (alist-get 'prompt turn))))
+                                                 (and (stringp text)
+                                                      (not (string-empty-p (string-trim text)))
+                                                      text)))
+                                             (append outline nil)))))
+                        (prompt (car prompts))
+                        (last-prompt (car (last prompts)))
+                        (last-user-time
+                         (ashub--seconds
+                          (alist-get 'lastPromptAt (alist-get 'sessionListMetadata values))))
                         (title (alist-get 'title values))
                         (updated (ashub--seconds (alist-get 'updatedAt raw)))
                         (created (ashub--seconds (alist-get 'createdAt raw))))
@@ -223,6 +245,9 @@
                           :origin (alist-get 'origin raw)
                           :title (and (stringp title) (not (string-empty-p (string-trim title))) title)
                           :metadata (list :native-source (plist-get result :source)
+                                          :reference (list :first (or (and (stringp first) first) prompt)
+                                                           :last last-prompt
+                                                           :last-user-time last-user-time)
                                           :prompt-preview (and (stringp prompt)
                                                                (not (string-empty-p (string-trim prompt))) prompt)
                                           :updated-at updated :created-at created)) items))
