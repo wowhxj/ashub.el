@@ -20,7 +20,10 @@
 Each plist has :agent (claude, codex, pi, dsh or hermes), :root (local
 storage home; Pi uses its sessions directory), and optional :label,
 :profile, :program, :environment, :args, :scan-function, :open-function,
-:create-function.  Creation adapters receive (SOURCE DIRECTORY READY ERROR).
+:create-function, :summary-function.  Creation adapters receive
+(SOURCE DIRECTORY READY ERROR).  Summary readers receive
+(SESSION SUCCESS FAILURE), call SUCCESS with full relevant transcript text,
+and return a silent cancellation function; they must not start an agent.
 Additional roots must carry their own restore environment/profile.
 DSH uses the client's configured Host; additional Hosts need explicit
 scan/open functions rather than mutating the client's global transport."

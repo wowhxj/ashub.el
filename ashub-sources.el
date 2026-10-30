@@ -39,7 +39,7 @@
   "Normalize worker VALUE from SOURCE into a session."
   (unless (and (stringp (plist-get value :id)) (not (string-empty-p (plist-get value :id))))
     (error "Missing full session ID"))
-  (dolist (field '(:path :cwd :first_message :last_user_message :title))
+  (dolist (field '(:path :cwd :first_message :last_user_message :title :summary_revision))
     (unless (or (null (plist-get value field)) (stringp (plist-get value field)))
       (error "Invalid scanner text field: %s" field)))
   (ashub-session-create
@@ -52,7 +52,8 @@
    :empty (ashub--state-value (plist-get value :empty))
    :archived (ashub--state-value (plist-get value :archived))
    :origin (plist-get value :origin) :title (plist-get value :title)
-   :metadata (list :reference
+   :metadata (list :summary-revision (plist-get value :summary_revision)
+                   :reference
                    (list :first (plist-get value :first_message)
                          :last (plist-get value :last_user_message)
                          :last-user-time (ashub--seconds (plist-get value :last_user_time))))))

@@ -6,7 +6,7 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 
 ## Features
 
-- Sessions grouped by project, with available dates and message previews.
+- Sessions grouped by project, with available dates and message previews; optional gptel background summaries describe topic and progress in one Chinese sentence.
 - Search by agent, full session ID, project path, or first user message.
 - Keyboard navigation, agent shortcuts, collapsible groups, and session details.
 - Asynchronous history loading with per-source diagnostics.
@@ -74,9 +74,56 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 `N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `l`. Unlinked terminals appear in `l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
-The list shows **First user query | Latest user query** side by side. Long messages are truncated to one line; hover for the full available preview. Missing latest queries show `[末句未知]`, and DSH projections retain a `[预览]` label. Narrow windows hide Project to prioritize both queries. Key hints occupy one line, switching to keys only in narrow windows; press `?` for full help.
+The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
 
 Project grouping is the default. Agent shortcuts preserve the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
+
+## Compact chat details
+
+Press `i` for a compact header (agent, short ID, project, readable time, summary status and any AI summary). Full paths, source/profile, original first/latest queries and summary provenance are folded under **详细信息**; click it or press `m` to expand. Searching hidden metadata reveals it automatically. Source update/creation timestamps retain `*` rather than posing as interaction times.
+
+Agent messages sit on the **left**, users on the **right**, with separate light/dark-aware backgrounds. Paragraphs and code lines reflow to the window width from cached text, without re-reading history or using models. Role-like lines inside fenced code do not split messages.
+
+- Each message's **复制** button copies its original text, without presentation padding/reflow.
+- `C-c C-w` copies the original exported conversation; ordinary region copying includes presentation whitespace.
+- `TAB` / `S-TAB` navigate buttons, `g` reflows cached content, `q` leaves details. Reopen with `i` to read newer dialogue.
+- Customize `ashub-details-message-width` (100 columns), `ashub-details-message-width-ratio` (0.76), and the `ashub-details-user-face` / `ashub-details-assistant-face` faces.
+
+This reader shows saved user/assistant text, not images, hidden reasoning or tool calls. It is separate from summary input and never modifies agent history.
+
+## Optional background AI summaries
+
+Disabled by default. Enabling this mode sends full readable conversations and tool evidence to your **default gptel backend/model**, potentially incurring API charges. It does not start an agent or modify its history. Add after your existing gptel configuration:
+
+```elisp
+(with-eval-after-load 'gptel
+  (require 'ashub-summary)
+  (setq ashub-summary-idle-delay 300
+        ashub-summary-request-interval 60
+        ashub-summary-check-interval 30
+        ashub-summary-scan-interval 300
+        ashub-summary-stable-delay 300
+        ashub-summary-read-timeout 120
+        ashub-summary-request-timeout 180
+        ashub-summary-retry-delay 300
+        ashub-summary-retry-max-delay 3600
+        ashub-summary-max-attempts 3)
+  (ashub-summary-mode 1))
+```
+
+All times are positive seconds, configurable in your init file or the `ashub-summary` Customize group. New scheduling uses current values; already scheduled deadlines are not retroactively rewritten. Re-enable the mode to reschedule its check cycle.
+
+- Runs independently of the Hub buffer, gradually backfilling ordinary and archived sessions; known internal/empty sessions are excluded. Emacs-open or restoring sessions are skipped even when idle. After use ends, wait the configured delay; reopening resets it. External terminal usage is not detected. Newly discovered history also observes the waiting/stability windows.
+- One model request at a time, at least the configured interval apart. Earlier pending revisions are processed first, with recent history first within a batch, avoiding backfill starvation.
+- Saves tokens by **avoiding unnecessary requests**, not shrinking individual inputs: unchanged content is not regenerated, metadata changes are verified without another model call, and successful summaries survive restarts. Initial and updated summaries both use full relevant history, including tool evidence and Pi's saved active branch, not reference-export truncation or old-summary-plus-delta input. Hidden reasoning is omitted.
+- Requests use an isolated buffer without unrelated chat context, tools, or prompt transforms. Context-limit errors keep the old summary and stop blind retries rather than silently truncating. Change your gptel model and retry explicitly if needed. Transient backend failures back off the entire queue; configuration/authentication failures pause it until you retry or re-enable the mode.
+- Responses are checked against a fresh full read; reopening, changed content, deletion, or disabling the mode prevents stale callbacks overwriting a summary. Cancelling an already-sent request does not guarantee that the provider will not bill it.
+
+Press `s` to requeue a session (still respecting open-session safety and timing), `!` for diagnostics, or `M-x ashub-summary-status` for background status. Details show summary time/model/errors and original queries. Outdated/failed states appear in the dedicated Summary status column, not inside either text column; previous summaries remain visible.
+
+`ashub-summary-cache-file` defaults to `~/.cache/ashub/summaries.json` (respecting `XDG_CACHE_HOME`): an atomically written `0600` file with summaries, fingerprints and scheduling state, not full transcripts. Changing gptel's model does not automatically regenerate everything. Deleting a session through the Hub also removes its summary.
+
+DSH input is limited to what its public read API returns. Reaching `ashub-summary-dsh-max-messages` fails closed. Custom sources can supply `:summary-function` with `(SESSION SUCCESS FAILURE)`, returning cancellation and supplying full transcript text to SUCCESS; see `ashub-sources`. See [the Chinese guide](README.zh-CN.md#后台-ai-摘要可选) for more detail.
 
 ## Referencing another session
 

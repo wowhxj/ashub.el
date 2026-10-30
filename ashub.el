@@ -15,6 +15,8 @@
 (require 'ashub-core)
 (require 'ashub-sources)
 (require 'ashub-open)
+(require 'ashub-summary)
+(require 'ashub-details)
 (require 'help-mode)
 (require 'text-property-search)
 
@@ -52,20 +54,6 @@
     (((class color) (background dark)) :background "#542b2b" :foreground "#ffd7cc")
     (t :inherit warning))
   "Face for session rows marked for permanent deletion."
-  :group 'ashub)
-
-(defface ashub-details-user-face
-  '((((class color) (background light)) :background "#e7f0ff" :extend t)
-    (((class color) (background dark)) :background "#29384b" :extend t)
-    (t :inherit shadow))
-  "Background for user turns in session details."
-  :group 'ashub)
-
-(defface ashub-details-assistant-face
-  '((((class color) (background light)) :background "#f4f0df" :extend t)
-    (((class color) (background dark)) :background "#403b2a" :extend t)
-    (t :inherit default))
-  "Background for assistant turns in session details."
   :group 'ashub)
 
 (defun ashub--source-label (source)
@@ -212,7 +200,7 @@
         (t "[首条用户消息未知]")))
 
 (defconst ashub--key-hints
-  "N新建 RET打开 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 i详情 !诊断 w/W复制 1–5跳转 ?帮助 q退出"
+  "N新建 RET打开 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 i详情 s摘要 !诊断 w/W复制 1–5跳转 ?帮助 q退出"
   "Compact descriptions of the Hub's primary commands.")
 
 (defun ashub--insert-key-hints ()
@@ -220,13 +208,41 @@
   (insert (propertize
            (if (<= (string-width ashub--key-hints) (window-body-width))
                ashub--key-hints
-             "N RET n/p j a/o l C c TAB g R d/u x i ! w/W 1–5 ? q")
+             "N RET n/p j a/o l C c TAB g R d/u x i s ! w/W 1–5 ? q")
            'help-echo ashub--key-hints)
           "\n\n"))
 
 (defun ashub--table-column (text width)
   "Format TEXT as a single-line column of display WIDTH."
   (truncate-string-to-width (ashub--one-line text) width nil ?\s "…"))
+
+(defun ashub--row-text (session)
+  "Return SESSION's AI summary, falling back only to its first user message."
+  (or (ashub-summary-text session) (ashub--preview-text session)))
+
+(defun ashub--last-user-text (session)
+  "Return SESSION's latest user message, preserving projection/unknown labels."
+  (let ((last (plist-get (plist-get (ashub-session-metadata session) :reference) :last)))
+    (if (and (stringp last) (not (string-empty-p (string-trim last))))
+        (if (eq (ashub-session-agent session) 'dsh) (concat "[预览] " last) last)
+      "[末句未知]")))
+
+(defun ashub--summary-status (session)
+  "Return SESSION's explicit summary status, separate from either message."
+  (let ((entry (ashub-summary-entry session)))
+    (cond ((and ashub-summary--job
+                (equal (ashub-summary--key session) (plist-get ashub-summary--job :key))) "摘要中")
+          ((plist-get entry :error) "摘要失败")
+          ((and (plist-get entry :summary)
+                (not (equal (ashub-summary--stamp session) (plist-get entry :checked-stamp)))) "待更新")
+          ((plist-get entry :summary) "已生成")
+          ((not ashub-summary-mode) "未启用")
+          (ashub-summary--paused-error "已暂停")
+          (t "待生成"))))
+
+(defun ashub--summary-suffix (session)
+  "Return SESSION's labelled summary status for the details buffer."
+  (format " [%s]" (ashub--summary-status session)))
 
 (defun ashub--row-status (session)
   "Return the status suffix for SESSION without shifting its message columns."
@@ -248,10 +264,19 @@
                           0))
          (prefix-width (+ 32 id-width (if (> project-width 0) (1+ project-width) 0)))
          ;; Match the four-column left gutter (including the delete-mark slot).
-         (message-width (max 2 (- width prefix-width 3 4)))
-         (first-width (/ message-width 2)))
-    (list :id id-width :project project-width
-          :first first-width :last (- message-width first-width))))
+         (message-width (max 28 (- width prefix-width 4)))
+         ;; Retain legacy session warnings after the three named columns.
+         ;; In narrow windows their full text remains in the status tooltip.
+         (session-status-width
+          (min (max 0 (- message-width 27))
+               (apply #'max 0 (mapcar (lambda (session) (string-width (ashub--row-status session)))
+                                     sessions))))
+         (text-width (- message-width session-status-width 8 6))
+         (last-min (if (> session-status-width 0) 9 10))
+         (summary-width (max 4 (min (- text-width last-min) (floor (* text-width 0.6))))))
+    (list :id id-width :project project-width :message message-width
+          :summary summary-width :last (- text-width summary-width)
+          :summary-status 8 :session-status session-status-width)))
 
 (defun ashub--row-prefix (layout mark agent open date id project)
   "Format the leading columns using LAYOUT and the supplied field values."
@@ -266,11 +291,22 @@
 (defun ashub--insert-table-header (layout)
   "Insert column labels using LAYOUT."
   (insert (propertize
-           (concat (ashub--row-prefix layout " " "Agent" " " "日期*" "ID" "项目")
-                   (ashub--table-column "用户首句" (plist-get layout :first)) "   "
-                   (ashub--table-column "用户末句" (plist-get layout :last)) "    ")
-           'face 'bold
-           'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=已打开；[预览]=投影消息")
+           (concat (propertize
+                    (ashub--row-prefix layout " " "Agent" " " "日期*" "ID" "项目")
+                    'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=已打开")
+                   (propertize (ashub--table-column "摘要" (plist-get layout :summary))
+                               'ashub-column 'summary
+                               'help-echo "优先显示 AI 摘要；尚未生成时仅显示用户首句")
+                   "   "
+                   (propertize (ashub--table-column "用户末句" (plist-get layout :last))
+                               'ashub-column 'last
+                               'help-echo "最新用户消息，独立于摘要；[预览] 表示来源投影")
+                   "   "
+                   (propertize (ashub--table-column "摘要状态" (plist-get layout :summary-status))
+                               'ashub-column 'summary-status
+                               'help-echo "待生成 / 摘要中 / 已生成 / 待更新 / 摘要失败 / 未启用 / 已暂停")
+                   (make-string (plist-get layout :session-status) ?\s) "    ")
+           'face 'bold)
           "\n"))
 
 (defun ashub--insert-row (session sessions &optional layout)
@@ -284,14 +320,14 @@
                    (concat (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
                            (if (memq (ashub-session-display-time-source session) '(updated created)) "*" ""))
                  "时间未知"))
-         (first (ashub--preview-text session))
-         (last (plist-get (plist-get (ashub-session-metadata session) :reference) :last))
-         (last (when (and (stringp last) (not (string-empty-p (string-trim last)))) last))
-         (last (if (and last (eq (ashub-session-agent session) 'dsh))
-                   (concat "[预览] " last) (or last "[末句未知]")))
-         (status (ashub--row-status session))
-         (status (truncate-string-to-width status (max 0 (1- (plist-get layout :last)))
-                                           nil nil "…"))
+         (text (ashub--row-text session))
+         (last (ashub--last-user-text session))
+         (status (ashub--summary-status session))
+         (session-status (ashub--row-status session))
+         (status-help (concat status "；摘要列显示"
+                              (if (ashub-summary-text session) " AI 摘要" "用户首句预览")
+                              (when (not (string-empty-p session-status))
+                                (concat "\n会话状态（与摘要状态无关）：" session-status))))
          (prefix (ashub--row-prefix
                   layout (if (gethash key ashub--delete-marks) "D" " ")
                   (symbol-name (ashub-session-agent session))
@@ -299,13 +335,16 @@
                   (ashub--middle (ashub-session-project session)
                                  (max 1 (plist-get layout :project))))))
     (insert prefix
-            (propertize (ashub--table-column first (plist-get layout :first))
-                        'help-echo first)
+            (propertize (ashub--table-column text (plist-get layout :summary))
+                        'help-echo text 'ashub-column 'summary)
             "   "
-            (propertize (concat (ashub--table-column
-                                 last (- (plist-get layout :last) (string-width status)))
-                                status)
-                        'help-echo (concat last (ashub--row-status session)))
+            (propertize (ashub--table-column last (plist-get layout :last))
+                        'help-echo last 'ashub-column 'last)
+            "   "
+            (propertize (ashub--table-column status (plist-get layout :summary-status))
+                        'help-echo status-help 'ashub-column 'summary-status)
+            (propertize (ashub--table-column session-status (plist-get layout :session-status))
+                        'help-echo status-help 'ashub-column 'session-status)
             "    \n")
     (when (gethash key ashub--delete-marks)
       (let ((marked (make-overlay start (line-end-position) nil t nil)))
@@ -641,7 +680,7 @@ Keep the current project filter.  Never restore a session."
          (id (ashub-session-id session))
          (project (ashub-session-project session))
          (project-width (max 16 (min 34 (- width 62))))
-         (preview (ashub--preview-text session))
+         (preview (ashub--row-text session))
          (column (lambda (value size)
                    (let ((short (truncate-string-to-width (ashub--one-line value) size nil nil "…")))
                      (concat short (make-string (max 0 (- size (string-width short))) ?\s)))))
@@ -654,7 +693,9 @@ Keep the current project filter.  Never restore a session."
                                                     preview-width nil nil "…")))
          (search-text (mapconcat #'identity
                                  (list agent id (ashub--source-label (ashub-session-source session))
-                                       (or (ashub-session-cwd session) "") preview)
+                                       (or (ashub-session-cwd session) "") preview
+                                       (ashub--preview-text session)
+                                       (or (plist-get (plist-get (ashub-session-metadata session) :reference) :last) ""))
                                  " ")))
     (propertize search-text 'display display)))
 
@@ -729,38 +770,7 @@ Keep the current project filter.  Never restore a session."
                      (markdown (ashub-reference-markdown session)))
                 (ashub--conversation-text markdown))
             (error (format "[读取对话失败：%s]" (error-message-string err))))))
-    (with-help-window "*ashub details*"
-      (princ (format "Agent: %s\nSession ID: %s\nSource: %s\nStorage path: %s\nProject: %s\n"
-                     (ashub-session-agent session) (ashub-session-id session)
-                     (ashub--source-label (ashub-session-source session))
-                     (or (ashub-session-path session) "unknown")
-                     (or (ashub-session-cwd session) "unknown")))
-      (princ (format "Storage root: %s\nProfile label: %S\n"
-                     (plist-get (ashub-session-source session) :root)
-                     (plist-get (ashub-session-source session) :profile)))
-      (princ (format "Origin: %S\nInteraction time: %S\nTime source: %S\nInternal: %S\nEmpty: %S\nArchived: %S\nData: %s\n"
-                     (ashub-session-origin session) (ashub-session-last-active session)
-                     (ashub-session-time-source session) (ashub-session-internal session)
-                     (ashub-session-empty session) (ashub-session-archived session)
-                     (if stale "stale; refresh failed" "see source status")))
-      (when (ashub-session-title session)
-        (princ (format "Title (not a raw first message): %s\n" (ashub-session-title session))))
-      (princ (format "\nFirst user message:\n%s\n"
-                     (or (ashub-session-first-message session) "[unknown]")))
-      (when (and (not (ashub-session-first-message session))
-                 (plist-get (ashub-session-metadata session) :prompt-preview))
-        (princ (format "\nMessage preview (turnOutline; may be truncated):\n%s\n"
-                       (plist-get (ashub-session-metadata session) :prompt-preview))))
-      (princ (format "\nDisplayed date source: %S\n" (ashub-session-display-time-source session)))
-      (dolist (field '((:updated-at . "Source updated at") (:created-at . "Source created at")))
-        (when-let* ((seconds (plist-get (ashub-session-metadata session) (car field))))
-          (princ (format "%s (not interaction time): %s\n" (cdr field)
-                         (format-time-string "%Y-%m-%d %H:%M:%S" (seconds-to-time seconds))))))
-      (princ "\nConversation (user and assistant text; thoughts/tool calls omitted):\n\n")
-      (let ((start (point)))
-        (princ conversation)
-        (ashub--highlight-conversation start (point))))
-    (ashub--display-full-buffer "*ashub details*")))
+    (ashub-details-show session conversation stale)))
 
 (defun ashub--delete-file-for-session (session)
   "Return SESSION's validated local history file for permanent deletion."
@@ -820,6 +830,7 @@ Keep the current project filter.  Never restore a session."
              (source-key (ashub-source-key (ashub-session-source session)))
              (state (gethash source-key ashub--states)))
         (delete-file path)
+        (ashub-summary-forget session)
         (setf (plist-get state :items)
               (seq-remove (lambda (item) (equal (ashub-session-key item) key))
                           (plist-get state :items)))
@@ -876,6 +887,17 @@ Keep the current project filter.  Never restore a session."
       (princ "字段缺失：会话已载入，但部分原始字段不可用；预览/标题会单独标注。\n")
       (princ "读取异常：部分文件或消息未完整载入。来源失败：扫描失败，旧数据可能保留。\n")
       (princ "过滤/隐藏包括当前搜索条件，以及默认排除的内部、空和归档会话。\n\n")
+      (princ (format "后台摘要：%s；摘要处理中：%s；缓存记录：%d\n"
+                     (if ashub-summary-mode "启用" "关闭")
+                     (if ashub-summary--job "是" "否") (hash-table-count ashub-summary--cache)))
+      (when ashub-summary--diagnostic
+        (princ (format "摘要诊断：%s\n" ashub-summary--diagnostic)))
+      (dolist (session (ashub--all-sessions))
+        (when-let* ((entry (ashub-summary-entry session)) (error (plist-get entry :error)))
+          (princ (format "  [%s %s] %s（失败 %s 次；s 可重新排队）\n"
+                         (ashub-session-agent session) (ashub-session-id session)
+                         error (plist-get entry :failures)))))
+      (princ "\n")
       (maphash (lambda (_key state)
                  (princ (format "%s\nStatus: %s; retained records: %d\n"
                                 (ashub--source-label (plist-get state :source))
@@ -912,7 +934,7 @@ Keep the current project filter.  Never restore a session."
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
-                     ("R" . ashub-relocate-project)
+                     ("R" . ashub-relocate-project) ("s" . ashub-summary-retry)
                      ("!" . ashub-diagnostics) ("?" . describe-mode)
                      ("C" . ashub-clear-filters)
                      ("C-c C-k" . ashub-clear-filters)
@@ -930,7 +952,10 @@ d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
 w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
 1 Claude；2 Codex；3 Pi；4 DSH；5 Hermes（跳转保留项目筛选）。
 
-列表展示用户首句与用户末句，鼠标悬停可查看完整预览。
+列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
+各列鼠标悬停显示完整文本；原始首末句也保留在详情中。
+s 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。
+摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
 窄窗口隐藏项目列，可在分组标题、详情中查看项目。
 列标记：D=待删除，*=已打开，[预览]=投影消息，未知消息不作推断。
 日期 *：来源更新时间/创建时间，不是已验证的交互时间。

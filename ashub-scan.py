@@ -6,6 +6,7 @@ Never import or invoke an agent. SQLite connections use mode=ro and query_only.
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -97,6 +98,7 @@ class Messages:
         self.complete = True
         self.time_source = "message"
         self.turns = []
+        self.revision = None
 
     def add(self, role, content, time):
         if role not in ("user", "assistant"):
@@ -129,6 +131,8 @@ class Messages:
                     last_user_time=self.last_user_time, last_active=self.last,
                     time_source=self.time_source if self.last else None,
                     empty=False if self.users else (True if self.complete else UNKNOWN))
+        if self.revision:
+            item["summary_revision"] = self.revision
 
 
 def json_lines(path, messages):
@@ -272,6 +276,7 @@ def history_messages(connection, session_id):
     """The current Codex thread history is complete across pages, unlike history.jsonl."""
     messages = Messages()
     messages.time_source = "thread-history item/turn"
+    revision = hashlib.sha256()
     required = {"thread_id", "turn_id", "item_type", "item_json"}
     item_columns = columns(connection, "thread_items")
     turn_columns = columns(connection, "thread_turns")
@@ -283,7 +288,7 @@ def history_messages(connection, session_id):
         query = f"""SELECT i.*, t.started_at AS turn_started, t.completed_at AS turn_completed
           FROM thread_items i LEFT JOIN thread_turns t
           ON i.thread_id=t.thread_id AND i.turn_id=t.turn_id
-          WHERE i.thread_id=? AND i.item_type IN ('userMessage','agentMessage')
+          WHERE i.thread_id=?
           ORDER BY t.rollout_ordinal, i.{ordinal}"""
     else:
         raise ValueError("Cannot establish history turn order")
@@ -291,6 +296,10 @@ def history_messages(connection, session_id):
         try:
             item = json.loads(row["item_json"])
             kind = row["item_type"]
+            if kind not in ("reasoning", "compaction"):
+                revision.update(json.dumps([kind, item], sort_keys=True, ensure_ascii=True).encode())
+            if kind not in ("userMessage", "agentMessage"):
+                continue
             content = item.get("content", item.get("text", item.get("message")))
             row = dict(row)
             messages.add("user" if kind == "userMessage" else "assistant", content,
@@ -300,6 +309,7 @@ def history_messages(connection, session_id):
         except (ValueError, AttributeError) as error:
             messages.complete = False
             diagnostic(session_id, f"Invalid Codex history item: {error}")
+    messages.revision = revision.hexdigest()
     return messages
 
 
@@ -387,6 +397,7 @@ def hermes(root):
                         (isinstance(config, dict) and config.get("_delegate_from")) else UNKNOWN,
                         archived=bool(row["archived"]) if row.get("archived") is not None else UNKNOWN)
             messages = Messages()
+            revision = hashlib.sha256()
             order = "timestamp, id" if "id" in message_columns else "timestamp, rowid"
             for raw_message in connection.execute(
                     f"SELECT * FROM messages WHERE session_id=? ORDER BY {order}", (row["id"],)):
@@ -407,7 +418,11 @@ def hermes(root):
                                               "[CONTEXT SUMMARY]:")) or (
                         "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]" in text):
                     continue
+                revision.update(json.dumps([message["role"], content, message.get("tool_calls"),
+                                            message.get("tool_call_id"), message.get("name")],
+                                           sort_keys=True, ensure_ascii=True).encode())
                 messages.add(message["role"], content, message["timestamp"])
+            messages.revision = revision.hexdigest()
             messages.apply(item)
             found(item, messages)
     finally:
