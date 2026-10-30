@@ -67,11 +67,14 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `R` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`). Missing projects show `[目录缺失]`. If a Pi session's recorded cwd is missing, restore forks it into the mapped directory and removes the old file only after verifying the live session and complete copied history; other agent history is not rewritten. |
 | `g` / `!` | Refresh / show diagnostics |
+| `?` | Show full key bindings and column-marker help |
 | `q` | Leave the Hub and restore the previous window layout |
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
 `N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `l`. Unlinked terminals appear in `l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+
+The list shows **First user query | Latest user query** side by side. Long messages are truncated to one line; hover for the full available preview. Missing latest queries show `[末句未知]`, and DSH projections retain a `[预览]` label. Narrow windows hide Project to prioritize both queries. Key hints occupy one line, switching to keys only in narrow windows; press `?` for full help.
 
 Project grouping is the default. Agent shortcuts preserve the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 

@@ -117,9 +117,167 @@
 
 (ert-deftest ashub-row-preview-remains-one-line ()
   (ashub-test-with-hub
-   (ashub-test-install (list (ashub-test-session :first-message "hello\nworld\t[thing]")))
+   (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+     (ashub-test-install (list (ashub-test-session :first-message "hello\nworld\t[thing]"))))
    (should (string-match-p "hello world \\[thing\\]" (buffer-string)))
    (should-not (string-match-p "hello\nworld" (buffer-string)))))
+
+(ert-deftest ashub-key-hints-fit-one-line-at-wide-and-narrow-widths ()
+  (dolist (width '(80 120 180 240))
+    (ashub-test-with-hub
+     (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) width)))
+       (ashub-test-install (list (ashub-test-session))))
+     (goto-char (point-min))
+     (forward-line 2)
+     (let ((line (buffer-substring (line-beginning-position) (line-end-position))))
+       (should (<= (string-width line) width))
+       (dolist (keys '("N" "RET" "n/p" "j" "a/o" "l" "C" "c" "TAB" "g" "R"
+                       "d/u" "x" "i" "!" "w/W" "1–5" "?" "q"))
+         (should (string-match-p (regexp-quote keys) line))))
+     (should-not (string-match-p "快速定位：\\|列标记：" (buffer-string))))))
+
+(ert-deftest ashub-table-aligns-first-and-last-user-messages ()
+  (dolist (width '(80 120 180 240))
+    (ashub-test-with-hub
+     (let ((a (ashub-test-session :id "12345678-a" :cwd "/项目/中文"
+                                  :first-message "最初的问题\n后续行"
+                                  :metadata '(:reference (:last "最终要求\t完成"))))
+           (b (ashub-test-session :id "12345678-b" :cwd "/another/project"
+                                  :first-message (make-string 200 ?中)
+                                  :metadata (list :reference (list :last (make-string 200 ?末)))))
+           columns)
+       (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) width))
+                 ((symbol-function 'ashub--stale-p) (lambda (_) nil))
+                 ((symbol-function 'ashub-session-cwd-missing-p) (lambda (_) nil)))
+         (let ((inhibit-read-only t)
+               (layout (ashub--table-layout (list a b))))
+           (erase-buffer)
+           (ashub--insert-table-header layout)
+           (ashub--insert-row a (list a b) layout)
+           (ashub--insert-row b (list a b) layout)))
+       (goto-char (point-min))
+       (while (not (eobp))
+         (should (<= (string-width (buffer-substring (line-beginning-position)
+                                                   (line-end-position))) width))
+         (if-let* ((session (get-text-property (point) 'ashub-session)))
+             (goto-char (prop-match-beginning
+                         (text-property-search-forward
+                          'help-echo (plist-get (plist-get (ashub-session-metadata session) :reference) :last)
+                          #'equal)))
+           (search-forward "用户末句" (line-end-position))
+           (backward-char 4))
+         (push (current-column) columns)
+         (forward-line 1))
+       (should (apply #'= columns))
+       (should (string-match-p "最终要求 完成" (buffer-string)))
+       (should-not (string-match-p "最初的问题\n" (buffer-string)))))))
+
+(ert-deftest ashub-table-metadata-columns-are-bounded ()
+  (ashub-test-with-hub
+   (let* ((a (ashub-test-session :id "same-prefix-1234567890-a"
+                                :cwd "/a/very/long/project/directory"))
+          (b (ashub-test-session :id "same-prefix-1234567890-b"
+                                :cwd "/another/very/long/project/directory"))
+          (sessions (list a b)))
+     (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+       (let ((layout (ashub--table-layout sessions)) (inhibit-read-only t))
+         (should (= (plist-get layout :id) 10))
+         (should (= (plist-get layout :project) 20))
+         (ashub--insert-row a sessions layout)
+         (goto-char (point-min))
+         (should (text-property-search-forward 'help-echo (ashub-session-id a) #'equal)))))))
+
+(ert-deftest ashub-table-short-projects-do-not-reserve-unused-space ()
+  (ashub-test-with-hub
+   (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+     (let ((layout (ashub--table-layout (list (ashub-test-session :cwd "/short")))))
+       (should (= (plist-get layout :project) 6))))))
+
+(ert-deftest ashub-table-uses-space-gaps-and-symmetric-margins ()
+  (dolist (width '(80 120 180 240))
+    (ashub-test-with-hub
+     (let* ((first (make-string 300 ?a)) (last (make-string 300 ?z))
+            (session (ashub-test-session :first-message first
+                                        :metadata (list :reference (list :last last))))
+            (inhibit-read-only t))
+       (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) width)))
+         (ashub--insert-row session (list session)))
+       (let ((line (buffer-substring-no-properties (point-min) (1- (point-max)))))
+         (should (= (string-width line) width))
+         (should (string-prefix-p "    claude" line))
+         (should (string-suffix-p "…    " line))
+         (should-not (string-match-p "│" line)))
+       (goto-char (point-min))
+       (let* ((first-match (text-property-search-forward 'help-echo first #'equal))
+              (first-end (prop-match-end first-match))
+              (last-match (text-property-search-forward 'help-echo last #'equal)))
+         (should (equal (buffer-substring-no-properties first-end (prop-match-beginning last-match))
+                        "   ")))))))
+
+(ert-deftest ashub-table-status-does-not-waste-space-in-healthy-rows ()
+  (ashub-test-with-hub
+   (let* ((healthy (ashub-test-session :id "healthy" :first-message (make-string 300 ?a)
+                                     :metadata (list :reference (list :last (make-string 300 ?z)))))
+          (missing (ashub-test-session :id "missing" :cwd "/missing/project"))
+          (inhibit-read-only t))
+     (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+       (let* ((layout (ashub--table-layout (list healthy missing)))
+              (healthy-layout (ashub--table-layout (list healthy))))
+         (should (= (plist-get layout :last) (plist-get healthy-layout :last)))
+         (ashub--insert-row healthy (list healthy missing) layout)
+         (ashub--insert-row missing (list healthy missing) layout)))
+     (goto-char (point-min))
+     (should (= (string-width (buffer-substring (line-beginning-position) (line-end-position))) 180))
+     (should (string-suffix-p "…    " (buffer-substring (line-beginning-position) (line-end-position))))
+     (forward-line 1)
+     (should (= (string-width (buffer-substring (line-beginning-position) (line-end-position))) 180))
+     (should (string-suffix-p "[目录缺失]    " (buffer-substring (line-beginning-position) (line-end-position)))))))
+
+(ert-deftest ashub-table-preserves-full-message-tooltips ()
+  (ashub-test-with-hub
+   (let* ((first (concat "first " (make-string 200 ?x)))
+          (last (concat "latest\n" (make-string 200 ?y)))
+          (session (ashub-test-session :first-message first
+                                      :metadata (list :reference (list :last last)))))
+     (ashub-test-install (list session))
+     (goto-char (point-min))
+     (search-forward "first ")
+     (should (equal (get-text-property (1- (point)) 'help-echo) first))
+     (search-forward "latest ")
+     (should (equal (get-text-property (1- (point)) 'help-echo) last)))))
+
+(ert-deftest ashub-table-does-not-invent-missing-last-user-message ()
+  (dolist (last '(nil "" " \n\t"))
+    (ashub-test-with-hub
+     (ashub-test-install (list (ashub-test-session :title "Assistant title"
+                                                  :metadata (list :reference (list :last last)))))
+     (should (string-match-p "\\[末句未知\\]" (buffer-string)))
+     (should-not (string-match-p "Assistant title" (buffer-string))))))
+
+(ert-deftest ashub-table-labels-dsh-last-message-as-preview ()
+  (ashub-test-with-hub
+   (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+     (ashub-test-install
+      (list (ashub-test-session :agent 'dsh :first-message nil
+                               :metadata '(:prompt-preview "first"
+                                           :reference (:last "latest"))))))
+   (should (string-match-p "\\[预览\\] first" (buffer-string)))
+   (should (string-match-p "\\[预览\\] latest" (buffer-string)))))
+
+(ert-deftest ashub-table-reserves-space-for-row-status ()
+  (ashub-test-with-hub
+   (let* ((ashub--opening (make-hash-table :test #'equal))
+          (session (ashub-test-session :cwd "/definitely/missing/project"
+                                      :metadata '(:reference (:last "latest"))))
+          (inhibit-read-only t))
+     (puthash (ashub-session-key session) t ashub--opening)
+     (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 100))
+               ((symbol-function 'ashub--stale-p) (lambda (_) t)))
+       (ashub--insert-row session (list session)))
+     (goto-char (point-min))
+     (should (= (string-width (buffer-substring (line-beginning-position)
+                                               (line-end-position))) 100))
+     (should (string-match-p "\\[恢复中\\].*\\[旧\\].*\\[目录缺失\\]" (buffer-string))))))
 
 (ert-deftest ashub-ui-preserves-selected-session-after-refresh ()
   (ashub-test-with-hub
@@ -668,8 +826,8 @@
   (ashub-test-with-hub
    (ashub-test-install (list (ashub-test-session)))
    (should (eq (lookup-key ashub-mode-map (kbd "C")) 'ashub-clear-filters))
-   (should (string-match-p "C 清除过滤" (buffer-string)))
-   (should (string-match-p "j 全量定位" (buffer-string)))
+   (should (string-match-p "C清除" ashub--key-hints))
+   (should (string-match-p "j 全量定位" (documentation 'ashub-mode)))
    (should-not (string-match-p "/ 搜索\\|搜索:" (buffer-string)))))
 
 (ert-deftest ashub-default-view-groups-by-project ()
@@ -684,9 +842,11 @@
    (dolist (binding '(("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                       ("o" . ashub-filter-project)))
      (should (eq (lookup-key ashub-mode-map (kbd (car binding))) (cdr binding))))
-   (should (string-match-p "n/p 移动" (buffer-string)))
-   (should (string-match-p "o 项目" (buffer-string)))
-   (should (string-match-p "1 Claude.*2 Codex.*3 Pi.*4 DSH.*5 Hermes" (buffer-string)))))
+   (should (eq (lookup-key ashub-mode-map (kbd "?")) 'describe-mode))
+   (should (string-match-p "n/p移动" ashub--key-hints))
+   (should (string-match-p "a/o筛选" ashub--key-hints))
+   (should (string-match-p "1 Claude.*2 Codex.*3 Pi.*4 DSH.*5 Hermes"
+                           (documentation 'ashub-mode)))))
 
 (ert-deftest ashub-entry-navigation-skips-help-lines ()
   (ashub-test-with-hub
@@ -850,7 +1010,8 @@
       (should (ashub-session-visible-p session nil nil "needle"))
       (should (seq-every-p (lambda (note) (eq (ashub-diagnostic-kind note) 'metadata)) diagnostics))
       (ashub-test-with-hub
-       (ashub-test-install items diagnostics)
+       (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+         (ashub-test-install items diagnostics))
        (should (string-match-p "\\[预览\\] needle" (buffer-string)))
        (goto-char (point-min)) (search-forward "preview-") (beginning-of-line)
        (save-window-excursion
@@ -890,7 +1051,8 @@
     (should (equal (ashub-session-preview (nth 1 items)) "title-only"))
     (should-not (ashub-session-preview (nth 2 items)))
     (ashub-test-with-hub
-     (ashub-test-install items)
+     (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 180)))
+       (ashub-test-install items))
      (should (string-match-p "\\[标题\\] title-only" (buffer-string))))))
 
 (ert-deftest ashub-metadata-notes-do-not-retain-vanished-sessions ()
@@ -1227,7 +1389,9 @@
              (setq ashub--live-only t)
              (should (equal (ashub--visible-sessions) (list live)))
              (ashub--render)
-             (should (string-match-p "Indexed prompt" (buffer-string)))
+             (should (save-excursion
+                       (goto-char (point-min))
+                       (text-property-search-forward 'help-echo "Indexed prompt" #'equal)))
              (should-not (string-match-p "未索引\\|时间未知" (buffer-string)))
              (goto-char (point-min))
              (re-search-forward "live-id")
@@ -1298,7 +1462,10 @@
     (ashub-test-with-hub
      (ashub-test-install items)
      (should-not (string-match-p "时间未知" (buffer-string)))
-     (should (string-match-p "日期 \\*：来源更新时间/创建时间" (buffer-string))))))
+     (goto-char (point-min))
+     (search-forward "日期*")
+     (should (string-match-p "日期 \\*：来源更新时间/创建时间"
+                             (get-text-property (1- (point)) 'help-echo))))))
 
 ;;; Session references
 

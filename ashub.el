@@ -211,28 +211,102 @@
         ((ashub-session-title session) (concat "[标题] " (ashub-session-title session)))
         (t "[首条用户消息未知]")))
 
-(defun ashub--insert-row (session sessions)
-  "Insert single-line table row for SESSION among SESSIONS."
+(defconst ashub--key-hints
+  "N新建 RET打开 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 i详情 !诊断 w/W复制 1–5跳转 ?帮助 q退出"
+  "Compact descriptions of the Hub's primary commands.")
+
+(defun ashub--insert-key-hints ()
+  "Insert all primary command keys on one line, fitting narrow windows."
+  (insert (propertize
+           (if (<= (string-width ashub--key-hints) (window-body-width))
+               ashub--key-hints
+             "N RET n/p j a/o l C c TAB g R d/u x i ! w/W 1–5 ? q")
+           'help-echo ashub--key-hints)
+          "\n\n"))
+
+(defun ashub--table-column (text width)
+  "Format TEXT as a single-line column of display WIDTH."
+  (truncate-string-to-width (ashub--one-line text) width nil ?\s "…"))
+
+(defun ashub--row-status (session)
+  "Return the status suffix for SESSION without shifting its message columns."
+  (concat (when (gethash (ashub-session-key session) ashub--opening) " [恢复中]")
+          (when (ashub--stale-p session) " [旧]")
+          (when (ashub-session-cwd-missing-p session) " [目录缺失]")))
+
+(defun ashub--table-layout (sessions)
+  "Compute shared column widths for SESSIONS and the current window."
+  (let* ((width (window-body-width (get-buffer-window (current-buffer))))
+         (id-width (min 10 (apply #'max 8 (mapcar (lambda (session)
+                                                  (string-width (ashub-short-id session sessions)))
+                                                sessions))))
+         ;; Bound metadata columns so queries get the remaining space.
+         (project-width (if (>= width 120)
+                            (min 20 (apply #'max 4 (mapcar (lambda (session)
+                                                            (string-width (ashub-session-project session)))
+                                                          sessions)))
+                          0))
+         (prefix-width (+ 32 id-width (if (> project-width 0) (1+ project-width) 0)))
+         ;; Match the four-column left gutter (including the delete-mark slot).
+         (message-width (max 2 (- width prefix-width 3 4)))
+         (first-width (/ message-width 2)))
+    (list :id id-width :project project-width
+          :first first-width :last (- message-width first-width))))
+
+(defun ashub--row-prefix (layout mark agent open date id project)
+  "Format the leading columns using LAYOUT and the supplied field values."
+  (concat (format "  %s %s%s %s %s " mark (ashub--table-column agent 7) open
+                  (ashub--table-column date 17)
+                  (propertize (ashub--table-column (ashub--middle id (plist-get layout :id))
+                                                  (plist-get layout :id))
+                              'help-echo (or (get-text-property 0 'help-echo id) id)))
+          (when (> (plist-get layout :project) 0)
+            (concat (ashub--table-column project (plist-get layout :project)) " "))))
+
+(defun ashub--insert-table-header (layout)
+  "Insert column labels using LAYOUT."
+  (insert (propertize
+           (concat (ashub--row-prefix layout " " "Agent" " " "日期*" "ID" "项目")
+                   (ashub--table-column "用户首句" (plist-get layout :first)) "   "
+                   (ashub--table-column "用户末句" (plist-get layout :last)) "    ")
+           'face 'bold
+           'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=已打开；[预览]=投影消息")
+          "\n"))
+
+(defun ashub--insert-row (session sessions &optional layout)
+  "Insert single-line table row for SESSION among SESSIONS using LAYOUT."
   (let* ((start (point)) (key (ashub-session-key session))
-         (width (max 40 (window-body-width (get-buffer-window (current-buffer)))))
-         (id (if (plist-get (ashub-session-metadata session) :unindexed-live)
-                 "未索引" (ashub-short-id session sessions)))
+         (layout (or layout (ashub--table-layout sessions)))
+         (id (propertize (if (plist-get (ashub-session-metadata session) :unindexed-live)
+                             "未索引" (ashub-short-id session sessions))
+                         'help-echo (ashub-session-id session)))
          (time (if-let* ((seconds (ashub-session-display-time session)))
                    (concat (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time seconds))
                            (if (memq (ashub-session-display-time-source session) '(updated created)) "*" ""))
                  "时间未知"))
-         (project-width (max 9 (min 27 (1- (/ width 5)))))
-         (preview (ashub--one-line (ashub--preview-text session)))
-         (prefix (format (format "  %%s %%-7s%%s %%-17s %%-%ds %%-%ds " (max 8 (length id)) project-width)
-                         (if (gethash key ashub--delete-marks) "D" " ")
-                         (ashub-session-agent session)
-                         (if (ashub--session-open-p session) "*" " ")
-                         time id (ashub--middle (ashub-session-project session) project-width)))
-         (prefix (concat prefix (if (gethash key ashub--opening) "[恢复中] " ""))))
+         (first (ashub--preview-text session))
+         (last (plist-get (plist-get (ashub-session-metadata session) :reference) :last))
+         (last (when (and (stringp last) (not (string-empty-p (string-trim last)))) last))
+         (last (if (and last (eq (ashub-session-agent session) 'dsh))
+                   (concat "[预览] " last) (or last "[末句未知]")))
+         (status (ashub--row-status session))
+         (status (truncate-string-to-width status (max 0 (1- (plist-get layout :last)))
+                                           nil nil "…"))
+         (prefix (ashub--row-prefix
+                  layout (if (gethash key ashub--delete-marks) "D" " ")
+                  (symbol-name (ashub-session-agent session))
+                  (if (ashub--session-open-p session) "*" " ") time id
+                  (ashub--middle (ashub-session-project session)
+                                 (max 1 (plist-get layout :project))))))
     (insert prefix
-            (truncate-string-to-width preview (max 12 (- width (string-width prefix) 5)) nil nil "…")
-            (if (ashub--stale-p session) " [旧]" "")
-            (if (ashub-session-cwd-missing-p session) " [目录缺失]" "") "\n")
+            (propertize (ashub--table-column first (plist-get layout :first))
+                        'help-echo first)
+            "   "
+            (propertize (concat (ashub--table-column
+                                 last (- (plist-get layout :last) (string-width status)))
+                                status)
+                        'help-echo (concat last (ashub--row-status session)))
+            "    \n")
     (when (gethash key ashub--delete-marks)
       (let ((marked (make-overlay start (line-end-position) nil t nil)))
         (overlay-put marked 'ashub-marked-row t)
@@ -258,6 +332,7 @@
          (window (get-buffer-window (current-buffer)))
          (window-start-key (and window (get-text-property (window-start window) 'ashub-key)))
          (sessions (ashub--visible-sessions))
+         (layout (ashub--table-layout sessions))
          (groups (make-hash-table :test #'equal)) order pending failures reads notes
          (inhibit-read-only t))
     (dolist (session sessions)
@@ -299,11 +374,8 @@
     (insert (format "分组:%s  agent:%s  项目:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部"))))
-    (insert "N 新建  RET 打开/恢复  n/p 移动  j 全量定位  a agent  o 项目  l 存活过滤  C 清除过滤  c 分组  TAB 折叠  g 刷新  R 目录重定向  d 标记删除  u 取消标记  x 执行  i 详情/对话  ! 诊断\n")
-    (insert "快速定位：1 Claude  2 Codex  3 Pi  4 DSH  5 Hermes（保留项目筛选）\n")
-    (insert "列标记：D=待删除，*=已打开\n\n")
-    (when (seq-some (lambda (session) (memq (ashub-session-display-time-source session) '(updated created))) sessions)
-      (insert "日期 *：来源更新时间/创建时间（不是已验证的交互时间）\n\n"))
+    (ashub--insert-key-hints)
+    (ashub--insert-table-header layout)
     (when ashub--states
       (maphash
        (lambda (_key state)
@@ -326,7 +398,7 @@
                                           "  [目录缺失：R 重定向]" ""))
                               'face 'bold))
           (add-text-properties start (point) (list 'ashub-group name 'ashub-key (list 'group name)))
-          (unless folded (dolist (session group) (ashub--insert-row session sessions))))))
+          (unless folded (dolist (session group) (ashub--insert-row session sessions layout))))))
     (goto-char (point-min))
     (let ((match (and key (text-property-search-forward 'ashub-key key #'equal))))
       (if match
@@ -841,14 +913,29 @@ Keep the current project filter.  Never restore a session."
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
                      ("R" . ashub-relocate-project)
-                     ("!" . ashub-diagnostics) ("C" . ashub-clear-filters)
+                     ("!" . ashub-diagnostics) ("?" . describe-mode)
+                     ("C" . ashub-clear-filters)
                      ("C-c C-k" . ashub-clear-filters)
                      ("q" . ashub-quit)))
       (define-key map (kbd (car entry)) (cdr entry)))
     map))
 
 (define-derived-mode ashub-mode special-mode "ashub"
-  "Browse historical agent sessions, without taking over external processes."
+  "Browse historical agent sessions, without taking over external processes.
+
+N 新建；RET 打开/恢复；n/p 移动；j 全量定位（清除现有筛选）。
+a/o 按 agent/项目筛选；l 仅存活；C 或 C-c C-k 清除筛选。
+c 切换分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
+d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
+w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
+1 Claude；2 Codex；3 Pi；4 DSH；5 Hermes（跳转保留项目筛选）。
+
+列表展示用户首句与用户末句，鼠标悬停可查看完整预览。
+窄窗口隐藏项目列，可在分组标题、详情中查看项目。
+列标记：D=待删除，*=已打开，[预览]=投影消息，未知消息不作推断。
+日期 *：来源更新时间/创建时间，不是已验证的交互时间。
+
+\\{ashub-mode-map}"
   (setq-local truncate-lines t)
   (add-hook 'post-command-hook #'ashub--update-current-row-highlight nil t)
   (setq ashub--states (make-hash-table :test #'equal)
