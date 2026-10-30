@@ -200,15 +200,16 @@
         (t "[首条用户消息未知]")))
 
 (defconst ashub--key-hints
-  "N新建 RET打开 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 i详情 s摘要 !诊断 w/W复制 1–5跳转 ?帮助 q退出"
+  "N新建 RET打开 s摘要 i详情 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
   "Compact descriptions of the Hub's primary commands.")
 
 (defun ashub--insert-key-hints ()
   "Insert all primary command keys on one line, fitting narrow windows."
   (insert (propertize
-           (if (<= (string-width ashub--key-hints) (window-body-width))
+           (if (<= (string-width ashub--key-hints)
+                   (window-body-width (get-buffer-window (current-buffer) t)))
                ashub--key-hints
-             "N RET n/p j a/o l C c TAB g R d/u x i s ! w/W 1–5 ? q")
+             "N RET s摘要 i n/p j a/o l C c TAB g R d/u x ! w/W ? q")
            'help-echo ashub--key-hints)
           "\n\n"))
 
@@ -927,8 +928,6 @@ Keep the current project filter.  Never restore a session."
                      ("j" . ashub-search-all) ("a" . ashub-filter-agent)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                      ("o" . ashub-filter-project) ("c" . ashub-change-grouping)
-                     ("1" . ashub-jump-claude) ("2" . ashub-jump-codex) ("3" . ashub-jump-pi)
-                     ("4" . ashub-jump-dsh) ("5" . ashub-jump-hermes)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
                      ("i" . ashub-details) ("l" . ashub-toggle-live-filter)
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
@@ -950,7 +949,6 @@ a/o 按 agent/项目筛选；l 仅存活；C 或 C-c C-k 清除筛选。
 c 切换分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
 d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
 w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
-1 Claude；2 Codex；3 Pi；4 DSH；5 Hermes（跳转保留项目筛选）。
 
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。

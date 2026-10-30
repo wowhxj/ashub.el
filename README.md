@@ -8,7 +8,7 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 
 - Sessions grouped by project, with available dates and message previews; optional gptel background summaries describe topic and progress in one Chinese sentence.
 - Search by agent, full session ID, project path, or first user message.
-- Keyboard navigation, agent shortcuts, collapsible groups, and session details.
+- Keyboard navigation, agent/project filters, collapsible groups, and session details.
 - Asynchronous history loading with per-source diagnostics.
 
 Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. Progress appears immediately in the echo area and header until readiness, failure, or timeout; a session being restored is also marked in its row.
@@ -57,7 +57,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
 | `j` | Choose a session from all loaded sessions; Vertico/Orderless can filter candidates, and `RET` jumps to the selected row |
 | `a` / `o` | Filter by agent / project |
-| `1`–`5` | Filter and jump to Claude / Codex / Pi / DSH / Hermes |
+| `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
 | `C` | Clear all filters |
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
@@ -76,7 +76,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
 
-Project grouping is the default. Agent shortcuts preserve the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
+Project grouping is the default. Filtering by agent with `a` preserves the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
 ## Compact chat details
 

@@ -132,9 +132,29 @@
      (let ((line (buffer-substring (line-beginning-position) (line-end-position))))
        (should (<= (string-width line) width))
        (dolist (keys '("N" "RET" "n/p" "j" "a/o" "l" "C" "c" "TAB" "g" "R"
-                       "d/u" "x" "i" "!" "w/W" "1–5" "?" "q"))
-         (should (string-match-p (regexp-quote keys) line))))
+                       "d/u" "x" "i" "s摘要" "!" "w/W" "?" "q"))
+         (should (string-match-p (regexp-quote keys) line)))
+       (should-not (string-match-p "1[–-]5" line)))
      (should-not (string-match-p "快速定位：\\|列标记：" (buffer-string))))))
+
+(ert-deftest ashub-key-hints-use-the-hub-window-not-the-selected-window ()
+  (ashub-test-with-hub
+   (cl-letf (((symbol-function 'get-buffer-window)
+              (lambda (&rest _) 'hub-window))
+             ((symbol-function 'window-body-width)
+              (lambda (&optional window &rest _) (if (eq window 'hub-window) 80 240))))
+     (let ((inhibit-read-only t)) (ashub--insert-key-hints)))
+   (goto-char (point-min))
+   (let ((line (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+     (should (<= (string-width line) 80))
+     (should (string-prefix-p "N RET s摘要" line)))))
+
+(ert-deftest ashub-numeric-agent-filter-bindings-are-removed ()
+  (dolist (key '("1" "2" "3" "4" "5"))
+    (should (eq (lookup-key ashub-mode-map (kbd key))
+                (lookup-key special-mode-map (kbd key)))))
+  (should (eq (lookup-key ashub-mode-map (kbd "a")) 'ashub-filter-agent))
+  (should (eq (lookup-key ashub-mode-map (kbd "s")) 'ashub-summary-retry)))
 
 (ert-deftest ashub-table-aligns-three-distinct-content-columns ()
   (dolist (width '(80 120 180 240))
@@ -848,8 +868,8 @@
    (should (eq (lookup-key ashub-mode-map (kbd "?")) 'describe-mode))
    (should (string-match-p "n/p移动" ashub--key-hints))
    (should (string-match-p "a/o筛选" ashub--key-hints))
-   (should (string-match-p "1 Claude.*2 Codex.*3 Pi.*4 DSH.*5 Hermes"
-                           (documentation 'ashub-mode)))))
+   (should (string-match-p "s 为当前会话重新排队生成摘要" (documentation 'ashub-mode)))
+   (should-not (string-match-p "1 Claude.*2 Codex" (documentation 'ashub-mode)))))
 
 (ert-deftest ashub-entry-navigation-skips-help-lines ()
   (ashub-test-with-hub
@@ -878,7 +898,7 @@
      (ashub-previous-entry)
      (should (equal (ashub--session-at-point) b)))))
 
-(ert-deftest ashub-agent-shortcuts-filter-and-reveal-without-scanning ()
+(ert-deftest ashub-jump-agent-filters-and-reveals-without-scanning ()
   (ashub-test-with-hub
    (dolist (agent '(claude codex pi dsh hermes))
      (ashub-test-install
@@ -889,21 +909,19 @@
    (let ((generation ashub--generation))
      (cl-letf (((symbol-function 'ashub-scan-source) (lambda (&rest _) (ert-fail "Rescanned")))
                ((symbol-function 'ashub-open-session) (lambda (&rest _) (ert-fail "Restored"))))
-       (cl-loop for agent in '(claude codex pi dsh hermes) for number from 1 do
-                (puthash "/shared/project" t ashub--collapsed)
-                (let ((command (lookup-key ashub-mode-map (number-to-string number))))
-                  (should (commandp command))
-                  (command-execute command))
-                (should (eq ashub--agent-filter agent))
-                (should (eq (ashub-session-agent (ashub--session-at-point)) agent))
-                (should-not (gethash "/shared/project" ashub--collapsed))
-                (should (equal ashub--project-filter "shared"))
-                (should (= generation ashub--generation)))))))
+       (dolist (agent '(claude codex pi dsh hermes))
+         (puthash "/shared/project" t ashub--collapsed)
+         (ashub-jump-agent agent)
+         (should (eq ashub--agent-filter agent))
+         (should (eq (ashub-session-agent (ashub--session-at-point)) agent))
+         (should-not (gethash "/shared/project" ashub--collapsed))
+         (should (equal ashub--project-filter "shared"))
+         (should (= generation ashub--generation)))))))
 
-(ert-deftest ashub-agent-shortcut-with-no-match-does-not-invent-a-row ()
+(ert-deftest ashub-jump-agent-with-no-match-does-not-invent-a-row ()
   (ashub-test-with-hub
    (ashub-test-install (list (ashub-test-session)))
-   (command-execute (lookup-key ashub-mode-map (kbd "3")))
+   (ashub-jump-agent 'pi)
    (should (eq ashub--agent-filter 'pi))
    (should-not (ashub--visible-sessions))
    (should-not (get-text-property (point) 'ashub-session))
