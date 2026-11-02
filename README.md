@@ -58,6 +58,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `j` | Choose a session from all loaded sessions; Vertico/Orderless can filter candidates, and `RET` jumps to the selected row |
 | `a` / `o` | Filter by agent / project |
 | `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
+| `S` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
 | `C` | Clear all filters |
 | `c` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
@@ -119,7 +120,7 @@ All times are positive seconds, configurable in your init file or the `ashub-sum
 - Requests use an isolated buffer without unrelated chat context, tools, or prompt transforms. Context-limit errors keep the old summary and stop blind retries rather than silently truncating. Change your gptel model and retry explicitly if needed. Transient backend failures back off the entire queue; configuration/authentication failures pause it until you retry or re-enable the mode.
 - Responses are checked against a fresh full read; reopening, changed content, deletion, or disabling the mode prevents stale callbacks overwriting a summary. Cancelling an already-sent request does not guarantee that the provider will not bill it.
 
-Press `s` to requeue a session (still respecting open-session safety and timing), `!` for diagnostics, or `M-x ashub-summary-status` for background status. Details show summary time/model/errors and original queries. Outdated/failed states appear in the dedicated Summary status column, not inside either text column; previous summaries remain visible.
+Press `s` to requeue a session or `S` to requeue all failed summaries, regardless of current list filters. Both preserve existing summaries and normal single-request concurrency, open-session safety and timing; `S` leaves in-flight work alone and reports the queued count. Use `!` for diagnostics, or `M-x ashub-summary-status` for background status. Details show summary time/model/errors and original queries. Outdated/failed states appear in the dedicated Summary status column, not inside either text column; previous summaries remain visible.
 
 `ashub-summary-cache-file` defaults to `~/.cache/ashub/summaries.json` (respecting `XDG_CACHE_HOME`): an atomically written `0600` file with summaries, fingerprints and scheduling state, not full transcripts. Changing gptel's model does not automatically regenerate everything. Deleting a session through the Hub also removes its summary.
 

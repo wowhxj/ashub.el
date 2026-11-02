@@ -200,7 +200,7 @@
         (t "[首条用户消息未知]")))
 
 (defconst ashub--key-hints
-  "N新建 RET打开 s摘要 i详情 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
+  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
   "Compact descriptions of the Hub's primary commands.")
 
 (defun ashub--insert-key-hints ()
@@ -209,7 +209,7 @@
            (if (<= (string-width ashub--key-hints)
                    (window-body-width (get-buffer-window (current-buffer) t)))
                ashub--key-hints
-             "N RET s摘要 i n/p j a/o l C c TAB g R d/u x ! w/W ? q")
+             "N RET s摘要 S重试失败 i n/p j a/o l C c TAB g R d/u x ! w/W ? q")
            'help-echo ashub--key-hints)
           "\n\n"))
 
@@ -934,6 +934,7 @@ Keep the current project filter.  Never restore a session."
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
                      ("R" . ashub-relocate-project) ("s" . ashub-summary-retry)
+                     ("S" . ashub-summary-retry-failed)
                      ("!" . ashub-diagnostics) ("?" . describe-mode)
                      ("C" . ashub-clear-filters)
                      ("C-c C-k" . ashub-clear-filters)
@@ -953,6 +954,7 @@ w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。
 s 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。
+S 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
 摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
 窄窗口隐藏项目列，可在分组标题、详情中查看项目。
 列标记：D=待删除，*=已打开，[预览]=投影消息，未知消息不作推断。

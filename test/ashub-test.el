@@ -132,7 +132,7 @@
      (let ((line (buffer-substring (line-beginning-position) (line-end-position))))
        (should (<= (string-width line) width))
        (dolist (keys '("N" "RET" "n/p" "j" "a/o" "l" "C" "c" "TAB" "g" "R"
-                       "d/u" "x" "i" "s摘要" "!" "w/W" "?" "q"))
+                       "d/u" "x" "i" "s摘要" "S重试失败" "!" "w/W" "?" "q"))
          (should (string-match-p (regexp-quote keys) line)))
        (should-not (string-match-p "1[–-]5" line)))
      (should-not (string-match-p "快速定位：\\|列标记：" (buffer-string))))))
@@ -154,7 +154,9 @@
     (should (eq (lookup-key ashub-mode-map (kbd key))
                 (lookup-key special-mode-map (kbd key)))))
   (should (eq (lookup-key ashub-mode-map (kbd "a")) 'ashub-filter-agent))
-  (should (eq (lookup-key ashub-mode-map (kbd "s")) 'ashub-summary-retry)))
+  (should (eq (lookup-key ashub-mode-map (kbd "s")) 'ashub-summary-retry))
+  (should (eq (lookup-key ashub-mode-map (kbd "S")) 'ashub-summary-retry-failed))
+  (should (commandp (lookup-key ashub-mode-map (kbd "S")))))
 
 (ert-deftest ashub-table-aligns-three-distinct-content-columns ()
   (dolist (width '(80 120 180 240))

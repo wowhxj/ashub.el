@@ -642,21 +642,48 @@ and empty sessions are excluded.  No agent process is started."
     (when ashub-summary--job (ashub-summary--release ashub-summary--job))
     (ashub-summary--save)))
 
+(defun ashub-summary--requeue (sessions)
+  "Queue SESSIONS again, preserving summaries and normal scheduling guards.
+Save and notify once for the whole batch.  Return the number queued."
+  (unless ashub-summary-mode (user-error "Enable ashub-summary-mode first"))
+  (when sessions
+    (setq ashub-summary--paused-error nil ashub-summary--next-request 0
+          ashub-summary--backend-failures 0 ashub-summary--diagnostic nil)
+    (dolist (session sessions)
+      (let* ((key (ashub-summary--key session)) (entry (ashub-summary-entry session)))
+        (setf (plist-get entry :fingerprint) nil (plist-get entry :checked-stamp) nil
+              (plist-get entry :retry-at) nil (plist-get entry :failures) 0
+              (plist-get entry :error) nil)
+        (puthash key entry ashub-summary--cache)
+        (puthash key session ashub-summary--sessions)))
+    (ashub-summary--observe)
+    (ashub-summary--save)
+    (ashub-summary--notify))
+  (length sessions))
+
 (defun ashub-summary-retry (session)
   "Queue SESSION again without bypassing open/closed safety or rate limits."
   (interactive (list (ashub--session-at-point)))
-  (unless ashub-summary-mode (user-error "Enable ashub-summary-mode first"))
-  (setq ashub-summary--paused-error nil ashub-summary--next-request 0
-        ashub-summary--backend-failures 0 ashub-summary--diagnostic nil)
-  (let* ((key (ashub-summary--key session)) (entry (ashub-summary-entry session)))
-    (setf (plist-get entry :fingerprint) nil (plist-get entry :checked-stamp) nil
-          (plist-get entry :retry-at) nil (plist-get entry :failures) 0
-          (plist-get entry :error) nil)
-    (puthash key entry ashub-summary--cache)
-    (puthash key session ashub-summary--sessions)
-    (ashub-summary--observe)
-    (ashub-summary--save)
-    (ashub-summary--notify)))
+  (ashub-summary--requeue (list session)))
+
+(defun ashub-summary-retry-failed ()
+  "Requeue all failed summaries in the inventory, ignoring Hub filters.
+Keep old summaries and leave the current job alone.  Only queue work;
+the scheduler still enforces usage protection, delays and rate limits."
+  (interactive)
+  (let (sessions)
+    (maphash
+     (lambda (key session)
+       (when (and (ashub-summary--eligible-p session)
+                  (plist-get (gethash key ashub-summary--cache) :error)
+                  (not (equal key (plist-get ashub-summary--job :key))))
+         (push session sessions)))
+     ashub-summary--sessions)
+    (let ((count (ashub-summary--requeue sessions)))
+      (if (> count 0)
+          (message "已重新排队 %d 条失败摘要；按后台规则逐条重试" count)
+        (message "当前没有需要重试的失败摘要"))
+      count)))
 
 (defun ashub-summary-forget (session)
   "Forget SESSION's derived summary after explicit deletion of its history."
