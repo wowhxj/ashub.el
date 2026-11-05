@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Full, read-only summary input. Never execute tools or load agent code.
 
-Unlike reference export, this path retains tool calls/results and does not
-truncate dialogue. Stdout is one JSON object; partial/malformed reads fail.
+Only user/assistant dialogue is kept: tool calls/results and hidden
+reasoning are dropped. Dialogue is never truncated here; the Emacs side
+splits it to fit the model context. Stdout is one JSON object;
+partial/malformed reads fail.
 """
 import argparse
 import json
@@ -12,7 +14,7 @@ import sys
 
 
 def content(value):
-    """Render textual content and tool evidence, not hidden reasoning."""
+    """Render dialogue text only, not tool calls/results or hidden reasoning."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -20,17 +22,10 @@ def content(value):
     if not isinstance(value, dict):
         return ""
     kind = value.get("type", "")
-    if kind in ("thinking", "reasoning", "redacted_thinking"):
+    if kind in ("thinking", "reasoning", "redacted_thinking", "tool_use", "toolCall",
+                "tool_call", "function_call", "custom_tool_call", "tool_result",
+                "toolResult", "function_call_output", "custom_tool_call_output"):
         return ""
-    if kind in ("tool_use", "toolCall", "tool_call", "function_call",
-                "custom_tool_call"):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    if kind in ("tool_result", "toolResult", "function_call_output",
-                "custom_tool_call_output"):
-        evidence = dict(value)
-        field = "content" if "content" in evidence else "output"
-        evidence[field] = content(evidence.get(field, ""))
-        return json.dumps(evidence, ensure_ascii=False, sort_keys=True)
     if isinstance(value.get("text"), str):
         return value["text"]
     if "content" in value:
@@ -40,23 +35,13 @@ def content(value):
 
 def turn(message):
     role = message.get("role")
-    if role not in ("user", "assistant", "tool", "toolResult", "function"):
+    if role not in ("user", "assistant"):
         return None
-    raw_content = message.get("content", message.get("text", ""))
-    if role == "user" and isinstance(raw_content, list) and raw_content and all(
-            isinstance(part, dict) and part.get("type") == "tool_result" for part in raw_content):
-        role = "tool"
-    text = content(raw_content)
-    calls = message.get("tool_calls")
-    if calls:
-        text += "\n" + json.dumps(calls, ensure_ascii=False, sort_keys=True)
+    # A user message holding only tool_result parts renders empty and is dropped.
+    text = content(message.get("content", message.get("text", "")))
     if not text.strip():
         return None
-    result = {"role": role, "text": text}
-    for key in ("name", "toolName", "tool_call_id", "toolCallId", "isError"):
-        if key in message:
-            result[key] = message[key]
-    return result
+    return {"role": role, "text": text}
 
 
 def log_records(path, root):
@@ -122,10 +107,6 @@ def file_turns(agent, records, session_id):
                 kind = payload.get("type", "")
                 if kind == "message":
                     message = payload
-                elif kind in ("function_call", "function_call_output",
-                              "custom_tool_call", "custom_tool_call_output"):
-                    message = {"role": "tool" if kind.endswith("output") else "assistant",
-                               "content": content(payload)}
             elif row.get("type") == "event_msg":
                 kind = payload.get("type")
                 if kind in ("user_message", "agent_message"):
@@ -178,13 +159,10 @@ def database_turns(agent, root, session_id):
             item = json.loads(message["item_json"])
             if not isinstance(item, dict):
                 raise ValueError("Codex history item is not structured dialogue")
-            if kind in ("reasoning", "compaction"):
+            if kind not in ("userMessage", "agentMessage"):
                 continue
-            if kind in ("userMessage", "agentMessage"):
-                message = {"role": "user" if kind == "userMessage" else "assistant",
-                           "content": item.get("content", item.get("text", item.get("message", "")))}
-            else:
-                message = {"role": "tool", "content": json.dumps(item, ensure_ascii=False, sort_keys=True)}
+            message = {"role": "user" if kind == "userMessage" else "assistant",
+                       "content": item.get("content", item.get("text", item.get("message", "")))}
         else:
             if message.get("display_kind") or message.get("_compressed_summary"):
                 continue
@@ -195,8 +173,6 @@ def database_turns(agent, root, session_id):
                     message["content"] = json.loads(message["content"])
                 except ValueError:
                     pass
-        if message.get("tool_calls") and isinstance(message["tool_calls"], str):
-            message["tool_calls"] = json.loads(message["tool_calls"])
         item = turn(message)
         if item:
             result.append(item)
@@ -226,7 +202,7 @@ def read_session(agent, root, session_id, path=None):
     if not any(item["role"] == "user" for item in turns):
         raise ValueError("Session contains no readable user dialogue")
     # No title, mtime, cwd or message timestamps: metadata-only changes do not
-    # trigger another model request. Ordering and tool evidence remain intact.
+    # trigger another model request. Dialogue ordering remains intact.
     return json.dumps(turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 

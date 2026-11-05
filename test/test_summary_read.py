@@ -24,7 +24,7 @@ class SummaryReadTests(unittest.TestCase):
         path.write_text("\n".join(json.dumps(row) for row in records), encoding="utf-8")
         return path
 
-    def test_claude_full_text_tool_evidence_no_reasoning(self):
+    def test_claude_full_dialogue_without_tools_or_reasoning(self):
         middle = "中间推翻最初方案" * 30000
         path = self.log([
             {"sessionId": "s", "type": "user", "message": {"role": "user", "content": "修复恢复失败"}},
@@ -37,8 +37,9 @@ class SummaryReadTests(unittest.TestCase):
         ])
         text = summary.read_session("claude", self.root, "s", path)
         self.assertIn(middle, text)
-        self.assertIn("make check", text)
-        self.assertIn("115 tests passed", text)
+        self.assertNotIn("make check", text)
+        self.assertNotIn("115 tests passed", text)
+        self.assertEqual([t["role"] for t in json.loads(text)], ["user", "assistant"])
         self.assertNotIn("hidden private reasoning", text)
         self.assertGreater(len(text), 200000)
 
@@ -51,7 +52,7 @@ class SummaryReadTests(unittest.TestCase):
         self.log(rows)
         self.assertEqual(before, summary.read_session("claude", self.root, "s", path))
 
-    def test_pi_active_branch_and_tools(self):
+    def test_pi_active_branch_without_tools(self):
         path = self.log([
             {"type": "session", "id": "s", "version": 3},
             {"type": "message", "id": "u", "parentId": None,
@@ -67,8 +68,7 @@ class SummaryReadTests(unittest.TestCase):
         text = summary.read_session("pi", self.root, "s", path)
         self.assertNotIn("错误分支", text)
         self.assertIn("最终方案", text)
-        self.assertIn("tests failed", text)
-        self.assertIn('"isError":true', text)
+        self.assertNotIn("tests failed", text)
 
     def test_pi_broken_branch_fails_closed(self):
         path = self.log([{"type": "session", "id": "s"},
@@ -90,11 +90,11 @@ class SummaryReadTests(unittest.TestCase):
         ])
         text = summary.read_session("codex", self.root, "s", path)
         self.assertEqual(text.count("修复"), 1)
-        self.assertIn("make test", text)
-        self.assertIn("passed", text)
+        self.assertNotIn("make test", text)
+        self.assertNotIn("passed", text)
         self.assertNotIn("secret", text)
 
-    def test_codex_database_keeps_tool_items(self):
+    def test_codex_database_drops_tool_items(self):
         db = sqlite3.connect(self.root / "thread_history_1.sqlite")
         db.executescript("""
             CREATE TABLE thread_items(thread_id, turn_id, item_type, item_json, ordinal);
@@ -110,8 +110,8 @@ class SummaryReadTests(unittest.TestCase):
         db.commit()
         db.close()
         text = summary.read_session("codex", self.root, "s")
-        self.assertIn("make check", text)
-        self.assertIn("passed", text)
+        self.assertNotIn("make check", text)
+        self.assertIn("修复已通过测试", text)
 
     def test_codex_event_user_is_kept_when_only_assistant_has_response_items(self):
         path = self.log([
@@ -176,7 +176,7 @@ class SummaryReadTests(unittest.TestCase):
         self.assertNotEqual(before["a"], after["a"])
         self.assertEqual(before["b"], after["b"])
 
-    def test_hermes_full_messages_and_tool_results(self):
+    def test_hermes_full_messages_without_tools(self):
         db = sqlite3.connect(self.root / "state.db")
         db.executescript("CREATE TABLE messages(session_id, role, content, timestamp, tool_calls, active, compacted);")
         db.executemany("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)", [
@@ -189,8 +189,8 @@ class SummaryReadTests(unittest.TestCase):
         db.commit()
         db.close()
         text = summary.read_session("hermes", self.root, "s")
-        self.assertIn("make check", text)
-        self.assertIn("tests passed", text)
+        self.assertNotIn("make check", text)
+        self.assertNotIn("tests passed", text)
         self.assertIn("已调整代码", text)
         self.assertNotIn("abandoned branch", text)
 
