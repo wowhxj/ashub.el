@@ -237,6 +237,7 @@
           ((and (plist-get entry :summary)
                 (not (equal (ashub-summary--stamp session) (plist-get entry :checked-stamp)))) "待更新")
           ((plist-get entry :summary) "已生成")
+          ((not (ashub-summary--eligible-p session)) "不摘要")
           ((not ashub-summary-mode) "未启用")
           (ashub-summary--paused-error "已暂停")
           (t "待生成"))))
@@ -305,7 +306,7 @@
                    "   "
                    (propertize (ashub--table-column "摘要状态" (plist-get layout :summary-status))
                                'ashub-column 'summary-status
-                               'help-echo "待生成 / 摘要中 / 已生成 / 待更新 / 摘要失败 / 未启用 / 已暂停")
+                               'help-echo "待生成 / 摘要中 / 已生成 / 待更新 / 摘要失败 / 不摘要（空或内部会话） / 未启用 / 已暂停")
                    (make-string (plist-get layout :session-status) ?\s) "    ")
            'face 'bold)
           "\n"))

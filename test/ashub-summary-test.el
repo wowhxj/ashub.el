@@ -635,7 +635,19 @@
         (should (equal (ashub--summary-status session) "未启用")))
       (let ((ashub-summary--paused-error "需要修复模型配置"))
         (should (equal (ashub--summary-status session) "已暂停")))
+      (setf (ashub-session-empty session) t)
+      (should (equal (ashub--summary-status session) "不摘要"))
       (should-not ashub-summary-test-prompts))))
+
+(ert-deftest ashub-summary-start-refreshes-display-before-work-finishes ()
+  (ashub-summary-test-with-state
+    (let ((session (ashub-summary-test-session)) (shown nil))
+      (ashub-summary-test-ready session)
+      (cl-letf (((symbol-function 'ashub-summary--read-adapter) (lambda (&rest _) #'ignore))
+                ((symbol-function 'ashub-summary--notify)
+                 (lambda () (push (ashub--summary-status session) shown))))
+        (ashub-summary--start session))
+      (should (equal shown '("摘要中"))))))
 
 (ert-deftest ashub-summary-retry-failed-is-global-selective-and-batched ()
   (ashub-summary-test-with-state

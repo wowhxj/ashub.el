@@ -595,6 +595,7 @@ Segments are summarized one at a time; notes too long are condensed again."
          (job (list :key key :session session :stamp (ashub-summary--stamp session)
                     :fingerprint nil :cancel nil :timer nil :model nil :buffer nil :invalid nil)))
     (setq ashub-summary--job job)
+    (ashub-summary--notify)
     (condition-case err
         (setf (plist-get job :cancel)
               (ashub-summary--read
