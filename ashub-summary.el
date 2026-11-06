@@ -94,6 +94,8 @@ Below 1 leaves room for CJK text, JSON escaping, prompts and output."
 (defconst ashub-summary--reader
   (expand-file-name "ashub-summary-read.py"
                     (file-name-directory (or load-file-name buffer-file-name))))
+(defconst ashub-summary--no-dialogue "Session contains no readable user dialogue"
+  "Read outcome for sessions without user dialogue; never a retryable failure.")
 (defvar ashub-summary--cache (make-hash-table :test #'equal))
 (defvar ashub-summary--sessions (make-hash-table :test #'equal))
 (defvar ashub-summary--loaded-file nil)
@@ -215,6 +217,9 @@ not reset the stability window."
   "Whether SESSION belongs to the summary inventory, including archives."
   (and (not (eq (ashub-session-internal session) t))
        (not (eq (ashub-session-empty session) t))
+       ;; DSH only lets a child be read through its parent; the parent's
+       ;; summary already covers the child's work.
+       (not (equal (ashub-session-origin session) "subagent"))
        (not (plist-get (ashub-session-metadata session) :unindexed-live))))
 
 (defun ashub-summary--observe ()
@@ -371,14 +376,17 @@ returning a cancellation function.  SUCCESS receives full transcript text."
                         (limit (if (and (numberp reported) (> reported 0))
                                    (min reported ashub-summary-dsh-max-messages)
                                  ashub-summary-dsh-max-messages)))
-                   (if (or (null messages) (>= (length messages) limit)
-                           (eq (plist-get value :truncated) t) (eq (plist-get value :has-more) t)
-                           (not (seq-some (lambda (item)
-                                            (and (eq (plist-get item :role) 'user)
-                                                 (stringp (plist-get item :text))
-                                                 (not (string-empty-p (string-trim (plist-get item :text))))))
-                                          messages)))
-                       (funcall failure "DSH content empty or retrieval limit reached; not summarized")
+                   (cond
+                    ((or (>= (length messages) limit)
+                         (eq (plist-get value :truncated) t) (eq (plist-get value :has-more) t))
+                     (funcall failure "DSH retrieval limit reached; not summarized"))
+                    ((not (seq-some (lambda (item)
+                                      (and (eq (plist-get item :role) 'user)
+                                           (stringp (plist-get item :text))
+                                           (not (string-empty-p (string-trim (plist-get item :text))))))
+                                    messages))
+                     (funcall failure ashub-summary--no-dialogue))
+                    (t
                      ;; json-serialize returns unibyte UTF-8; concat with a
                      ;; multibyte prompt would turn non-ASCII into raw bytes.
                      (funcall success
@@ -387,7 +395,7 @@ returning a cancellation function.  SUCCESS receives full transcript text."
                                (vconcat (mapcar (lambda (item)
                                                   (list :role (format "%s" (plist-get item :role))
                                                         :text (or (plist-get item :text) ""))) messages)))
-                               'utf-8)))))
+                               'utf-8))))))
                :on-error failure :max-messages ashub-summary-dsh-max-messages)))
    (t (ashub-summary--read-local session success failure))))
 
@@ -438,6 +446,18 @@ returning a cancellation function.  SUCCESS receives full transcript text."
 
 (defun ashub-summary--failed (job error)
   "Keep the old summary, back off JOB after ERROR, and bound retries."
+  (when (and (eq job ashub-summary--job)
+             (string-match-p (regexp-quote ashub-summary--no-dialogue) (format "%s" error)))
+    ;; Nothing to summarize: record it, not an error, so retries skip it
+    ;; until the session's content changes.
+    (let* ((key (plist-get job :key)) (entry (gethash key ashub-summary--cache)))
+      (setf (plist-get entry :no-dialogue) t (plist-get entry :error) nil
+            (plist-get entry :failures) 0 (plist-get entry :retry-at) nil
+            (plist-get entry :checked-stamp) (plist-get job :stamp))
+      (puthash key entry ashub-summary--cache))
+    (ashub-summary--release job)
+    (ashub-summary--save)
+    (ashub-summary--notify))
   (when (eq job ashub-summary--job)
     (let* ((key (plist-get job :key)) (entry (gethash key ashub-summary--cache))
            (case-fold-search t)
@@ -504,7 +524,8 @@ returning a cancellation function.  SUCCESS receives full transcript text."
                          (plist-get entry :checked-stamp) (plist-get job :stamp)
                          (plist-get entry :failures) 0
                          (plist-get entry :retry-at) nil
-                         (plist-get entry :error) nil)
+                         (plist-get entry :error) nil
+                         (plist-get entry :no-dialogue) nil)
                    (puthash (plist-get job :key) entry ashub-summary--cache)))
                (ashub-summary--release job)
                (ashub-summary--save)

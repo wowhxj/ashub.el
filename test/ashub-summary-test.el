@@ -517,6 +517,47 @@
           (should (string-match-p "主题" prompt))
           (should (json-serialize prompt)))))))
 
+(ert-deftest ashub-summary-no-dialogue-is-not-a-failure-and-skips-retry ()
+  (ashub-summary-test-with-state
+    (let ((session (ashub-summary-test-session)))
+      (ashub-summary-test-ready session)
+      (cl-letf (((symbol-function 'ashub-summary--read-adapter)
+                 (lambda (_session _success failure)
+                   (funcall failure "Session contains no readable user dialogue") #'ignore)))
+        (ashub-summary--start session)
+        (should-not ashub-summary--job)
+        (should-not (plist-get (ashub-summary-entry session) :error))
+        (should (equal (ashub--summary-status session) "不摘要"))
+        (should (= (ashub-summary-retry-failed) 0))
+        (cl-incf ashub-summary-test-now 10000)
+        (should-not (ashub-summary--candidate)))
+      (should-not ashub-summary-test-prompts))))
+
+(ert-deftest ashub-summary-dsh-without-user-messages-is-no-dialogue ()
+  (let ((reader (symbol-function 'ashub-summary--read-adapter)))
+    (ashub-summary-test-with-state
+      (let ((session (ashub-summary-test-session :agent 'dsh
+                                                :source '(:agent dsh :root "configured-host"))))
+        (ashub-summary-test-ready session)
+        (cl-letf (((symbol-function 'require) (lambda (&rest _) t))
+                  ((symbol-function 'ashub--dsh-source-check) #'ignore)
+                  ((symbol-function 'ashub-summary--read-adapter) reader)
+                  ((symbol-function 'emacs-dsh-read-session)
+                   (lambda (_id success &rest _options) (funcall success '(:messages nil)) #'ignore)))
+          (ashub-summary--start session))
+        (should (plist-get (ashub-summary-entry session) :no-dialogue))
+        (should (equal (ashub--summary-status session) "不摘要"))))))
+
+(ert-deftest ashub-summary-dsh-subagent-is-excluded-even-with-old-error ()
+  (ashub-summary-test-with-state
+    (let ((session (ashub-summary-test-session :id "child" :origin "subagent")))
+      (should-not (ashub-summary--eligible-p session))
+      (puthash (ashub-summary--key session) '(:error "subagent Sessions require their durable parent address")
+               ashub-summary--cache)
+      (puthash (ashub-summary--key session) session ashub-summary--sessions)
+      (should (equal (ashub--summary-status session) "不摘要"))
+      (should (= (ashub-summary-retry-failed) 0)))))
+
 (ert-deftest ashub-summary-local-encoding-error-does-not-back-off-backend ()
   (ashub-summary-test-with-state
     (let ((session (ashub-summary-test-session)))
