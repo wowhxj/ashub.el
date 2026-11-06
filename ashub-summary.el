@@ -379,11 +379,15 @@ returning a cancellation function.  SUCCESS receives full transcript text."
                                                  (not (string-empty-p (string-trim (plist-get item :text))))))
                                           messages)))
                        (funcall failure "DSH content empty or retrieval limit reached; not summarized")
+                     ;; json-serialize returns unibyte UTF-8; concat with a
+                     ;; multibyte prompt would turn non-ASCII into raw bytes.
                      (funcall success
-                              (json-serialize
+                              (decode-coding-string
+                               (json-serialize
                                (vconcat (mapcar (lambda (item)
                                                   (list :role (format "%s" (plist-get item :role))
-                                                        :text (or (plist-get item :text) ""))) messages)))))))
+                                                        :text (or (plist-get item :text) ""))) messages)))
+                               'utf-8)))))
                :on-error failure :max-messages ashub-summary-dsh-max-messages)))
    (t (ashub-summary--read-local session success failure))))
 
@@ -438,7 +442,7 @@ returning a cancellation function.  SUCCESS receives full transcript text."
     (let* ((key (plist-get job :key)) (entry (gethash key ashub-summary--cache))
            (case-fold-search t)
            (permanent (string-match-p
-                       "context.*\\(?:length\\|window\\)\\|maximum.*\\(?:context\\|token\\)\\|\\b\\(?:401\\|403\\)\\b\\|not installed\\|load-path\\|API unavailable\\|retrieval limit"
+                       "context.*\\(?:length\\|window\\)\\|maximum.*\\(?:context\\|token\\)\\|\\b\\(?:401\\|403\\)\\b\\|not installed\\|load-path\\|API unavailable\\|retrieval limit\\|json-value-p"
                        (format "%s" error)))
            (failures (if permanent ashub-summary-max-attempts
                        (1+ (or (plist-get entry :failures) 0)))))

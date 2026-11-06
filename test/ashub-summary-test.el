@@ -499,6 +499,33 @@
         (should-not ashub-summary--job)
         (should (string-match-p "retrieval limit" (plist-get (ashub-summary-entry session) :error)))))))
 
+(ert-deftest ashub-summary-dsh-non-ascii-dialogue-reaches-model-as-text ()
+  (let ((reader (symbol-function 'ashub-summary--read-adapter)))
+    (ashub-summary-test-with-state
+      (let ((session (ashub-summary-test-session :agent 'dsh
+                                                :source '(:agent dsh :root "configured-host"))))
+        (ashub-summary-test-ready session)
+        (cl-letf (((symbol-function 'require) (lambda (&rest _) t))
+                  ((symbol-function 'ashub--dsh-source-check) #'ignore)
+                  ((symbol-function 'ashub-summary--read-adapter) reader)
+                  ((symbol-function 'emacs-dsh-read-session)
+                   (lambda (_id success &rest _options)
+                     (funcall success '(:messages ((:role user :text "主题")
+                                                   (:role assistant :text "进展")))) #'ignore)))
+          (ashub-summary--start session))
+        (let ((prompt (car ashub-summary-test-prompts)))
+          (should (string-match-p "主题" prompt))
+          (should (json-serialize prompt)))))))
+
+(ert-deftest ashub-summary-local-encoding-error-does-not-back-off-backend ()
+  (ashub-summary-test-with-state
+    (let ((session (ashub-summary-test-session)))
+      (ashub-summary-test-ready session)
+      (ashub-summary--start session)
+      (ashub-summary--failed ashub-summary--job "Wrong type argument: json-value-p, \"x\"")
+      (should (= ashub-summary--backend-failures 0))
+      (should (= (plist-get (ashub-summary-entry session) :failures) ashub-summary-max-attempts)))))
+
 (ert-deftest ashub-summary-search-retains-original-prompts-with-ai-summary ()
   (ashub-summary-test-with-state
     (let* ((session (ashub-summary-test-session :metadata '(:reference (:last "原始末句"))))
