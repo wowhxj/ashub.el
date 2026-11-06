@@ -135,8 +135,9 @@ Conflicting restore configuration for the same source is an error."
          (not (file-directory-p cwd)))))
 
 (defun ashub--relocate-cwd (cwd)
-  "Map CWD through `ashub-project-relocations', longest OLD prefix wins."
-  (let (best)
+  "Map CWD through `ashub-project-relocations', longest OLD prefix wins.
+A trailing slash is dropped first, so \"dir/\" and \"dir\" group together."
+  (let ((cwd (if (stringp cwd) (directory-file-name cwd) cwd)) best)
     (dolist (pair ashub-project-relocations)
       (let ((old (directory-file-name (expand-file-name (car pair)))))
         (when (and (stringp cwd)

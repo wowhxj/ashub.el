@@ -1767,6 +1767,12 @@
            (should-not (ashub-session-cwd-missing-p (ashub-test-session :cwd new)))))
       (delete-directory root t))))
 
+(ert-deftest ashub-trailing-slash-cwd-groups-with-plain-cwd ()
+  (let ((ashub-project-relocations nil))
+    (should (equal (ashub--relocate-cwd "/tmp/proj/") "/tmp/proj"))
+    (should (equal (ashub--relocate-cwd "/") "/"))
+    (should-not (ashub--relocate-cwd nil))))
+
 (ert-deftest ashub-reference-native-summary-keeps-user-and-activity-times-separate ()
   (let* ((session (ashub--json-session
                    (ashub-test-source)
