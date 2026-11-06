@@ -528,6 +528,7 @@
         (should-not ashub-summary--job)
         (should-not (plist-get (ashub-summary-entry session) :error))
         (should (equal (ashub--summary-status session) "不摘要"))
+        (should (equal (ashub--summary-skip-reason session) "无对话"))
         (should (= (ashub-summary-retry-failed) 0))
         (cl-incf ashub-summary-test-now 10000)
         (should-not (ashub-summary--candidate)))
@@ -556,6 +557,7 @@
                ashub-summary--cache)
       (puthash (ashub-summary--key session) session ashub-summary--sessions)
       (should (equal (ashub--summary-status session) "不摘要"))
+      (should (equal (ashub--summary-skip-reason session) "子代理"))
       (should (= (ashub-summary-retry-failed) 0)))))
 
 (ert-deftest ashub-summary-local-encoding-error-does-not-back-off-backend ()

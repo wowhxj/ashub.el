@@ -228,14 +228,23 @@
         (if (eq (ashub-session-agent session) 'dsh) (concat "[预览] " last) last)
       "[末句未知]")))
 
+(defun ashub--summary-skip-reason (session)
+  "Return why SESSION is never summarized, or nil."
+  (let ((entry (ashub-summary-entry session)))
+    (unless (plist-get entry :summary)
+      (cond ((plist-get entry :no-dialogue) "无对话")
+            ((ashub-summary--eligible-p session) nil)
+            ((eq (ashub-session-internal session) t) "内部会话")
+            ((eq (ashub-session-empty session) t) "空会话")
+            ((equal (ashub-session-origin session) "subagent") "子代理")
+            (t "已排除")))))
+
 (defun ashub--summary-status (session)
   "Return SESSION's explicit summary status, separate from either message."
   (let ((entry (ashub-summary-entry session)))
     (cond ((and ashub-summary--job
                 (equal (ashub-summary--key session) (plist-get ashub-summary--job :key))) "摘要中")
-          ((and (not (plist-get entry :summary))
-                (or (plist-get entry :no-dialogue) (not (ashub-summary--eligible-p session))))
-           "不摘要")
+          ((ashub--summary-skip-reason session) "不摘要")
           ((plist-get entry :error) "摘要失败")
           ((and (plist-get entry :summary)
                 (not (equal (ashub-summary--stamp session) (plist-get entry :checked-stamp)))) "待更新")
@@ -252,7 +261,8 @@
   "Return the status suffix for SESSION without shifting its message columns."
   (concat (when (gethash (ashub-session-key session) ashub--opening) " [恢复中]")
           (when (ashub--stale-p session) " [旧]")
-          (when (ashub-session-cwd-missing-p session) " [目录缺失]")))
+          (when (ashub-session-cwd-missing-p session) " [目录缺失]")
+          (when-let* ((reason (ashub--summary-skip-reason session))) (format " [%s]" reason))))
 
 (defun ashub--table-layout (sessions)
   "Compute shared column widths for SESSIONS and the current window."
