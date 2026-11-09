@@ -188,9 +188,10 @@
 
 (defun ashub--group-name (session)
   "Return SESSION's group label in the selected grouping."
-  (if (eq ashub--grouping 'project)
-      (ashub-session-project session)
-    (symbol-name (ashub-session-agent session))))
+  (pcase ashub--grouping
+    ('project (ashub-session-project session))
+    ('agent (symbol-name (ashub-session-agent session)))
+    (_ nil)))
 
 (defun ashub--stale-p (session)
   "Whether SESSION is retained from a failed/incomplete refresh."
@@ -209,7 +210,7 @@
         (t "[首条用户消息未知]")))
 
 (defconst ashub--key-hints
-  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j搜索 f筛选 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
+  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j搜索 f筛选 P项目 a代理 l存活 t排序 c默认 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
   "Compact descriptions of the Hub's primary commands.")
 
 (defun ashub--insert-key-hints ()
@@ -218,7 +219,7 @@
            (if (<= (string-width ashub--key-hints)
                    (window-body-width (get-buffer-window (current-buffer) t)))
                ashub--key-hints
-             "N RET s摘要 S重试失败 i n/p j f筛选 TAB g R d/u x ! w/W ? q")
+             "N RET s摘要 S重试失败 i n/p j f筛选 P a l t c TAB g R d/u x ! w/W ? q")
            'help-echo ashub--key-hints)
           "\n\n"))
 
@@ -439,7 +440,7 @@
     (erase-buffer)
     (insert (propertize "Agent Session Hub\n" 'face 'bold))
     (insert (format "分组:%s  agent:%s  项目:%s  摘要范围:%s  仅存活:%s\n"
-                    ashub--grouping (or ashub--agent-filter "全部")
+                    (or ashub--grouping "无（时间倒序）") (or ashub--agent-filter "全部")
                     (ashub--one-line (or ashub--project-filter "全部"))
                     (if ashub--show-unsummarized "全部状态" "隐藏不摘要")
                     (if ashub--live-only "开" "关")))
@@ -460,13 +461,14 @@
       (dolist (name (nreverse order))
         (let* ((start (point)) (folded (gethash name ashub--collapsed))
                (group (nreverse (gethash name groups))))
-          (insert (propertize (format "%s %s (%d)%s\n" (if folded "+" "−") (ashub--one-line name)
-                                      (length group)
-                                      (if (and (eq ashub--grouping 'project)
-                                               (ashub-session-cwd-missing-p (car group)))
-                                          "  [目录缺失：R 重定向]" ""))
-                              'face 'bold))
-          (add-text-properties start (point) (list 'ashub-group name 'ashub-key (list 'group name)))
+          (when ashub--grouping
+            (insert (propertize (format "%s %s (%d)%s\n" (if folded "+" "−") (ashub--one-line name)
+                                        (length group)
+                                        (if (and (eq ashub--grouping 'project)
+                                                 (ashub-session-cwd-missing-p (car group)))
+                                            "  [目录缺失：R 重定向]" ""))
+                                'face 'bold))
+            (add-text-properties start (point) (list 'ashub-group name 'ashub-key (list 'group name))))
           (unless folded (dolist (session group) (ashub--insert-row session sessions layout))))))
     (goto-char (point-min))
     (let ((match (and key (text-property-search-forward 'ashub-key key #'equal))))
@@ -671,15 +673,22 @@ Keep the current project filter.  Never restore a session."
 (defun ashub-toggle-group ()
   "Collapse or expand point's group."
   (interactive)
+  (unless ashub--grouping (user-error "时间排序模式没有可折叠的分组"))
   (let ((name (or (get-text-property (point) 'ashub-group)
                   (ashub--group-name (ashub--session-at-point)))))
     (puthash name (not (gethash name ashub--collapsed)) ashub--collapsed)
     (ashub--render)))
 
 (defun ashub-change-grouping ()
-  "Toggle agent/project grouping while retaining filters."
+  "Group sessions by agent, retaining filters and newest-first group order."
   (interactive)
-  (setq ashub--grouping (if (eq ashub--grouping 'agent) 'project 'agent))
+  (setq ashub--grouping 'agent)
+  (clrhash ashub--collapsed) (ashub--render))
+
+(defun ashub-sort-by-time ()
+  "Toggle global newest-first ordering and project grouping, retaining filters."
+  (interactive)
+  (setq ashub--grouping (if ashub--grouping nil 'project))
   (clrhash ashub--collapsed) (ashub--render))
 
 (defun ashub-filter-agent ()
@@ -755,7 +764,8 @@ Keep the current project filter.  Never restore a session."
   "Restore default filters without reading history again."
   (interactive)
   (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil
-        ashub--show-unsummarized nil)
+        ashub--show-unsummarized nil ashub--grouping ashub-group-by)
+  (clrhash ashub--collapsed)
   (ashub--render))
 
 (defun ashub-toggle-unsummarized ()
@@ -765,7 +775,7 @@ Keep the current project filter.  Never restore a session."
   (ashub--render))
 
 (defun ashub-filter-menu ()
-  "Show current filters and dispatch one selection, without extra dependencies."
+  "Show filters, toggles and ordering, then dispatch one selection."
   (interactive)
   (let* ((agent (or ashub--agent-filter "全部"))
          (project (ashub--one-line (or ashub--project-filter "全部")))
@@ -775,19 +785,31 @@ Keep the current project filter.  Never restore a session."
          (key
           (save-window-excursion
             (with-help-window "*ashub 筛选*"
-              (princ "会话筛选（条件叠加）\n\n")
-              (princ (format "a  Agent：%s\np  项目：%s\nl  仅存活：%s\nA  显示不摘要会话：%s\n\n"
-                             agent project (if live "开" "关") (if all "开" "关")))
-              (princ (format "g  分组：%s\n\n" grouping))
-              (princ "c  恢复默认（隐藏不摘要会话）\nq  取消 / 返回\n\n")
-              (princ "A 仅切换摘要状态范围；仍遵循 Agent、项目、存活及内部/空/归档会话设置。\n"))
-            (read-char-choice "筛选 [a/p/l/A/g/c/q]：" '(?a ?p ?l ?A ?g ?c ?q ?\e)))))
+              (princ "会话筛选（条件叠加）\n\n筛选：\n------------\n")
+              (princ (format "P  按项目：%s\na  按 Agent：%s\n" project agent))
+              (princ "C  Claude Code\nx  Codex\np  Pi\nd  Dsh\n\n")
+              (princ "开关：\n------------\n")
+              (princ (format "l  是否 live session：%s\nh  是否显示隐藏 session：%s\n\n"
+                             (if live "开" "关") (if all "开" "关")))
+              (princ "排序：\n------------\n")
+              (princ (format "g  按 Agent 分组%s\nt  按时间倒序（再按恢复项目分组）%s\n\n"
+                             (if (eq grouping 'agent) "（当前）" "")
+                             (if (null grouping) "（当前）" "")))
+              (princ "其他：\n------------\nc  恢复默认\nq  取消 / 返回\n\n")
+              (princ "h 显示不摘要会话；仍遵循 Agent、项目、存活及内部/空/归档会话设置。\n"))
+            (read-char-choice "筛选 [P/a/C/x/p/d/l/h/g/t/c/q]："
+                              '(?P ?a ?C ?x ?p ?d ?l ?h ?g ?t ?c ?q ?\e)))))
     (pcase key
+      (?P (ashub-filter-project))
       (?a (ashub-filter-agent))
-      (?p (ashub-filter-project))
+      (?C (ashub-jump-claude))
+      (?x (ashub-jump-codex))
+      (?p (ashub-jump-pi))
+      (?d (ashub-jump-dsh))
       (?l (ashub-toggle-live-filter))
-      (?A (ashub-toggle-unsummarized))
+      (?h (ashub-toggle-unsummarized))
       (?g (ashub-change-grouping))
+      (?t (ashub-sort-by-time))
       (?c (ashub-clear-filters)))))
 
 (defun ashub--conversation-text (markdown)
@@ -990,6 +1012,9 @@ Keep the current project filter.  Never restore a session."
     (set-keymap-parent map special-mode-map)
     (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open)
                      ("j" . ashub-search-all) ("f" . ashub-filter-menu)
+                     ("P" . ashub-filter-project) ("a" . ashub-filter-agent)
+                     ("l" . ashub-toggle-live-filter) ("t" . ashub-sort-by-time)
+                     ("c" . ashub-clear-filters)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
                      ("i" . ashub-details)
@@ -1007,14 +1032,15 @@ Keep the current project filter.  Never restore a session."
   "Browse historical agent sessions, without taking over external processes.
 
 N 新建；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
-f 筛选：a/p 按 agent/项目筛选；l 仅存活；A 显示不摘要；c 恢复默认。
-f g 切换分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
+f 筛选菜单：P/a 按项目/Agent 筛选；C/x/p/d 筛选 Claude/Codex/Pi/Dsh。
+P/a/l/t/c 也可在列表直接使用；l 仅存活；f h 显示隐藏会话；c 恢复默认。
+f g 按 Agent 分组；t 切换全局时间倒序/项目分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
 d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
 w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
 
-f 打开筛选菜单，再按 a/p/l/A/g/c 选择条件；q 或 ESC 取消。
-所有筛选按键仅在 f 菜单内生效；默认隐藏不摘要会话。
-条件叠加，A 不改变内部/空/归档会话的既有显示设置。
+f 菜单分为筛选、开关、排序、其他；q 或 ESC 取消。
+默认隐藏不摘要会话；h 不改变内部/空/归档会话的既有显示设置。
+筛选条件叠加；恢复默认同时恢复 ashub-group-by 分组设置。
 仅存活模式仍显示尚未索引的终端，方便切换。
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。

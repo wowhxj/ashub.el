@@ -56,16 +56,18 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
 | `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
-| `f` | Open the filter menu with current values; choose `a/p/l/A/g/c`, or cancel with `q` / `ESC` / `C-g` |
-| `f A` | Toggle sessions excluded from summarization, retaining other filters |
-| `f a` / `f p` | Filter by agent / project |
+| `f` | Open the filter menu with current values; choose `P/a/C/x/p/d/l/h/g/t/c`, or cancel with `q` / `ESC` / `C-g` |
+| `f h` | Toggle sessions excluded from summarization, retaining other filters |
+| `a` / `P` (or `f a` / `f P`) | Filter by agent / project |
+| `f C` / `f x` / `f p` / `f d` | Filter Claude Code / Codex / Pi / Dsh directly |
 | `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
 | `S` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
-| `f c` | Restore default filters (hide sessions excluded from summarization) |
-| `f g` | Switch project / agent grouping |
+| `c` / `f c` | Restore default filters and grouping (hide sessions excluded from summarization) |
+| `f g` | Group by agent, newest first within each group |
+| `t` / `f t` | Toggle global newest-first ordering / project grouping |
 | `TAB` | Collapse or expand a group |
 | `i` | Show session details and the full readable conversation (user/assistant text; thoughts and tool calls omitted) |
-| `f l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
+| `l` / `f l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
 | `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `R` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`). Missing projects show `[目录缺失]`. If a Pi session's recorded cwd is missing, restore forks it into the mapped directory and removes the old file only after verifying the live session and complete copied history; other agent history is not rewritten. |
@@ -79,7 +81,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
 
-Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. All filtering now goes through `f`; standalone `a/o/l/A/C` and `C-c C-k` bindings are removed. `f A` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f A` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
+Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. The `f` menu separates filters, toggles, ordering and other actions. `P/a/l/t/c` also work directly in the list; `p` remains previous entry. `f h` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f h` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
 
 Project grouping is the default. Filtering by agent with `f a` preserves the current project filter; use `f c` to restore defaults. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
