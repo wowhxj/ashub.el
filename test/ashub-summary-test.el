@@ -574,10 +574,13 @@
     (let* ((session (ashub-summary-test-session :metadata '(:reference (:last "原始末句"))))
            (key (ashub-summary--key session)))
       (puthash key '(:summary "一句 AI 摘要") ashub-summary--cache)
-      (let ((candidate (ashub--session-search-candidate session 120)))
-        (should (string-match-p "一句 AI 摘要" candidate))
-        (should (string-match-p "原始首句" candidate))
-        (should (string-match-p "原始末句" candidate))))))
+      (with-temp-buffer
+        (ashub-mode)
+        (let ((candidate (ashub--session-search-candidate session (list session)
+                                                         (ashub--table-layout (list session)))))
+          (should (string-match-p "一句 AI 摘要" candidate))
+          (should (string-match-p "原始首句" candidate))
+          (should (string-match-p "原始末句" candidate)))))))
 
 (ert-deftest ashub-summary-native-probes-cannot-create-an-observation-loop ()
   (ashub-summary-test-with-state

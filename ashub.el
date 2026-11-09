@@ -34,6 +34,9 @@
 
 (defvar-local ashub--states nil "Source state table; results are memory-only.")
 (defvar-local ashub--generation 0 "Refresh generation, rejects late callbacks.")
+(defvar vertico-group-format)
+
+(defvar-local ashub--show-unsummarized nil)
 (defvar-local ashub--agent-filter nil)
 (defvar-local ashub--project-filter nil)
 (defvar-local ashub--live-only nil)
@@ -174,6 +177,12 @@
     (ashub-sort-sessions
      (seq-filter (lambda (item)
                    (and (ashub-session-visible-p item ashub--agent-filter ashub--project-filter nil)
+                        (or ashub--show-unsummarized
+                            ;; Live-only is also a terminal switcher: retain
+                            ;; terminals which have no history record yet.
+                            (and ashub--live-only
+                                 (plist-get (ashub-session-metadata item) :unindexed-live))
+                            (not (ashub--summary-skip-reason item)))
                         (or (not ashub--live-only) (ashub--session-open-p item))))
                  sessions))))
 
@@ -200,7 +209,7 @@
         (t "[首条用户消息未知]")))
 
 (defconst ashub--key-hints
-  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j全局 a/o筛选 l存活 C清除 c分组 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
+  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j搜索 f筛选 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
   "Compact descriptions of the Hub's primary commands.")
 
 (defun ashub--insert-key-hints ()
@@ -209,7 +218,7 @@
            (if (<= (string-width ashub--key-hints)
                    (window-body-width (get-buffer-window (current-buffer) t)))
                ashub--key-hints
-             "N RET s摘要 S重试失败 i n/p j a/o l C c TAB g R d/u x ! w/W ? q")
+             "N RET s摘要 S重试失败 i n/p j f筛选 TAB g R d/u x ! w/W ? q")
            'help-echo ashub--key-hints)
           "\n\n"))
 
@@ -323,9 +332,9 @@
            'face 'bold)
           "\n"))
 
-(defun ashub--insert-row (session sessions &optional layout)
-  "Insert single-line table row for SESSION among SESSIONS using LAYOUT."
-  (let* ((start (point)) (key (ashub-session-key session))
+(defun ashub--row-label (session sessions &optional layout)
+  "Return SESSION's shared Hub and completion row among SESSIONS using LAYOUT."
+  (let* ((key (ashub-session-key session))
          (layout (or layout (ashub--table-layout sessions)))
          (id (propertize (if (plist-get (ashub-session-metadata session) :unindexed-live)
                              "未索引" (ashub-short-id session sessions))
@@ -348,7 +357,7 @@
                   (if (ashub--session-open-p session) "*" " ") time id
                   (ashub--middle (ashub-session-project session)
                                  (max 1 (plist-get layout :project))))))
-    (insert prefix
+    (concat prefix
             (propertize (ashub--table-column text (plist-get layout :summary))
                         'help-echo text 'ashub-column 'summary)
             "   "
@@ -359,7 +368,12 @@
                         'help-echo status-help 'ashub-column 'summary-status)
             (propertize (ashub--table-column session-status (plist-get layout :session-status))
                         'help-echo status-help 'ashub-column 'session-status)
-            "    \n")
+            "    ")))
+
+(defun ashub--insert-row (session sessions &optional layout)
+  "Insert single-line table row for SESSION among SESSIONS using LAYOUT."
+  (let ((start (point)) (key (ashub-session-key session)))
+    (insert (ashub--row-label session sessions layout) "\n")
     (when (gethash key ashub--delete-marks)
       (let ((marked (make-overlay start (line-end-position) nil t nil)))
         (overlay-put marked 'ashub-marked-row t)
@@ -424,9 +438,11 @@
                                                  ',(if (or failures reads) 'warning 'mode-line))))
     (erase-buffer)
     (insert (propertize "Agent Session Hub\n" 'face 'bold))
-    (insert (format "分组:%s  agent:%s  项目:%s\n"
+    (insert (format "分组:%s  agent:%s  项目:%s  摘要范围:%s  仅存活:%s\n"
                     ashub--grouping (or ashub--agent-filter "全部")
-                    (ashub--one-line (or ashub--project-filter "全部"))))
+                    (ashub--one-line (or ashub--project-filter "全部"))
+                    (if ashub--show-unsummarized "全部状态" "隐藏不摘要")
+                    (if ashub--live-only "开" "关")))
     (ashub--insert-key-hints)
     (ashub--insert-table-header layout)
     (when ashub--states
@@ -630,7 +646,7 @@ Keep the current project filter.  Never restore a session."
     (if first
         (when-let* ((match (text-property-search-forward 'ashub-key (ashub-session-key first) #'equal)))
           (goto-char (prop-match-beginning match)))
-      (message "没有符合当前条件的 %s 会话；C 清除过滤，! 查看诊断" agent))))
+      (message "没有符合当前条件的 %s 会话；f c 恢复默认筛选，! 查看诊断" agent))))
 
 (defun ashub-jump-claude ()
   "Filter and jump to Claude sessions."
@@ -685,26 +701,12 @@ Keep the current project filter.  Never restore a session."
     (setq ashub--project-filter (unless (or (equal choice "全部") (string-empty-p choice)) choice)))
   (ashub--render))
 
-(defun ashub--session-search-candidate (session width)
-  "Build SESSION's searchable completion string with a column-aligned display."
-  (let* ((date (if-let* ((time (ashub-session-display-time session)))
-                   (format-time-string "%Y-%m-%d %H:%M" (seconds-to-time time))
-                 "时间未知"))
-         (agent (symbol-name (ashub-session-agent session)))
+(defun ashub--session-search-candidate (session sessions layout)
+  "Build SESSION's searchable candidate with the shared SESSIONS and LAYOUT."
+  (let* ((agent (symbol-name (ashub-session-agent session)))
          (id (ashub-session-id session))
-         (project (ashub-session-project session))
-         (project-width (max 16 (min 34 (- width 62))))
          (preview (ashub--row-text session))
-         (column (lambda (value size)
-                   (let ((short (truncate-string-to-width (ashub--one-line value) size nil nil "…")))
-                     (concat short (make-string (max 0 (- size (string-width short))) ?\s)))))
-         (preview-width (max 18 (- width 44 project-width)))
-         (display (concat (funcall column date 16) "  "
-                          (funcall column agent 8) "  "
-                          (funcall column (substring id 0 (min 12 (length id))) 12) "  "
-                          (funcall column (ashub--middle project project-width) project-width) "  "
-                          (truncate-string-to-width (ashub--one-line preview)
-                                                    preview-width nil nil "…")))
+         (display (ashub--row-label session sessions layout))
          (search-text (mapconcat #'identity
                                  (list agent id (ashub--source-label (ashub-session-source session))
                                        (or (ashub-session-cwd session) "") preview
@@ -714,19 +716,35 @@ Keep the current project filter.  Never restore a session."
     (propertize search-text 'display display)))
 
 (defun ashub-search-all ()
-  "Choose a matching session across all loaded sessions, then jump to its row."
+  "Search sessions matching the Hub's current filters, then jump to a row."
   (interactive)
-  (let* ((window (get-buffer-window (current-buffer) t))
-         (width (max 80 (if window (window-body-width window) (frame-width))))
-         (sessions (seq-filter (lambda (session) (ashub-session-visible-p session nil nil ""))
-                               (ashub--all-sessions)))
+  (let* ((visible (ashub--visible-sessions))
+         (sessions (let ((groups (make-hash-table :test #'equal)) order)
+                     (dolist (session visible)
+                       (let ((name (ashub--group-name session)))
+                         (unless (gethash name groups) (push name order))
+                         (push session (gethash name groups))))
+                     (apply #'append
+                            (mapcar (lambda (name) (nreverse (gethash name groups)))
+                                    (nreverse order)))))
+         (layout (ashub--table-layout visible))
          (choices (mapcar (lambda (session)
-                            (cons (ashub--session-search-candidate session width) session))
-                          sessions)))
+                            (cons (ashub--session-search-candidate session sessions layout) session))
+                          sessions))
+         (header (with-temp-buffer
+                   (ashub--insert-table-header layout)
+                   (string-trim-right (buffer-string) "\n")))
+         (table (lambda (string predicate action)
+                  (if (eq action 'metadata)
+                      `(metadata (display-sort-function . identity)
+                                 (cycle-sort-function . identity)
+                                 (group-function . ,(lambda (candidate transform)
+                                                      (if transform candidate header))))
+                    (complete-with-action action choices string predicate))))
+         (vertico-group-format "%s"))
     (unless choices (user-error "没有可搜索的会话"))
-    (let* ((choice (completing-read "全量会话：" choices nil t))
+    (let* ((choice (completing-read "搜索当前会话：" table nil t))
            (session (cdr (assoc choice choices))))
-      (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
       (remhash (ashub--group-name session) ashub--collapsed)
       (ashub--render)
       (goto-char (point-min))
@@ -734,10 +752,43 @@ Keep the current project filter.  Never restore a session."
         (goto-char (prop-match-beginning match))))))
 
 (defun ashub-clear-filters ()
-  "Clear agent, project and live-only filters without reading history again."
+  "Restore default filters without reading history again."
   (interactive)
-  (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil)
+  (setq ashub--agent-filter nil ashub--project-filter nil ashub--live-only nil
+        ashub--show-unsummarized nil)
   (ashub--render))
+
+(defun ashub-toggle-unsummarized ()
+  "Toggle sessions whose summary status is excluded, retaining other filters."
+  (interactive)
+  (setq ashub--show-unsummarized (not ashub--show-unsummarized))
+  (ashub--render))
+
+(defun ashub-filter-menu ()
+  "Show current filters and dispatch one selection, without extra dependencies."
+  (interactive)
+  (let* ((agent (or ashub--agent-filter "全部"))
+         (project (ashub--one-line (or ashub--project-filter "全部")))
+         (live ashub--live-only)
+         (all ashub--show-unsummarized)
+         (grouping ashub--grouping)
+         (key
+          (save-window-excursion
+            (with-help-window "*ashub 筛选*"
+              (princ "会话筛选（条件叠加）\n\n")
+              (princ (format "a  Agent：%s\np  项目：%s\nl  仅存活：%s\nA  显示不摘要会话：%s\n\n"
+                             agent project (if live "开" "关") (if all "开" "关")))
+              (princ (format "g  分组：%s\n\n" grouping))
+              (princ "c  恢复默认（隐藏不摘要会话）\nq  取消 / 返回\n\n")
+              (princ "A 仅切换摘要状态范围；仍遵循 Agent、项目、存活及内部/空/归档会话设置。\n"))
+            (read-char-choice "筛选 [a/p/l/A/g/c/q]：" '(?a ?p ?l ?A ?g ?c ?q ?\e)))))
+    (pcase key
+      (?a (ashub-filter-agent))
+      (?p (ashub-filter-project))
+      (?l (ashub-toggle-live-filter))
+      (?A (ashub-toggle-unsummarized))
+      (?g (ashub-change-grouping))
+      (?c (ashub-clear-filters)))))
 
 (defun ashub--conversation-text (markdown)
   "Extract dialogue from reference MARKDOWN, including Pi's plain speaker labels."
@@ -938,19 +989,16 @@ Keep the current project filter.  Never restore a session."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open)
-                     ("j" . ashub-search-all) ("a" . ashub-filter-agent)
+                     ("j" . ashub-search-all) ("f" . ashub-filter-menu)
                      ("n" . ashub-next-entry) ("p" . ashub-previous-entry)
-                     ("o" . ashub-filter-project) ("c" . ashub-change-grouping)
                      ("TAB" . ashub-toggle-group) ("g" . ashub-refresh)
-                     ("i" . ashub-details) ("l" . ashub-toggle-live-filter)
+                     ("i" . ashub-details)
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
                      ("R" . ashub-relocate-project) ("s" . ashub-summary-retry)
                      ("S" . ashub-summary-retry-failed)
                      ("!" . ashub-diagnostics) ("?" . describe-mode)
-                     ("C" . ashub-clear-filters)
-                     ("C-c C-k" . ashub-clear-filters)
                      ("q" . ashub-quit)))
       (define-key map (kbd (car entry)) (cdr entry)))
     map))
@@ -958,12 +1006,16 @@ Keep the current project filter.  Never restore a session."
 (define-derived-mode ashub-mode special-mode "ashub"
   "Browse historical agent sessions, without taking over external processes.
 
-N 新建；RET 打开/恢复；n/p 移动；j 全量定位（清除现有筛选）。
-a/o 按 agent/项目筛选；l 仅存活；C 或 C-c C-k 清除筛选。
-c 切换分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
+N 新建；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
+f 筛选：a/p 按 agent/项目筛选；l 仅存活；A 显示不摘要；c 恢复默认。
+f g 切换分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
 d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
 w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
 
+f 打开筛选菜单，再按 a/p/l/A/g/c 选择条件；q 或 ESC 取消。
+所有筛选按键仅在 f 菜单内生效；默认隐藏不摘要会话。
+条件叠加，A 不改变内部/空/归档会话的既有显示设置。
+仅存活模式仍显示尚未索引的终端，方便切换。
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。
 s 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。

@@ -55,15 +55,17 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
-| `j` | Choose a session from all loaded sessions; Vertico/Orderless can filter candidates, and `RET` jumps to the selected row |
-| `a` / `o` | Filter by agent / project |
+| `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
+| `f` | Open the filter menu with current values; choose `a/p/l/A/g/c`, or cancel with `q` / `ESC` / `C-g` |
+| `f A` | Toggle sessions excluded from summarization, retaining other filters |
+| `f a` / `f p` | Filter by agent / project |
 | `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
 | `S` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
-| `C` | Clear all filters |
-| `c` | Switch project / agent grouping |
+| `f c` | Restore default filters (hide sessions excluded from summarization) |
+| `f g` | Switch project / agent grouping |
 | `TAB` | Collapse or expand a group |
 | `i` | Show session details and the full readable conversation (user/assistant text; thoughts and tool calls omitted) |
-| `l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
+| `f l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
 | `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
 | `R` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`). Missing projects show `[目录缺失]`. If a Pi session's recorded cwd is missing, restore forks it into the mapped directory and removes the old file only after verifying the live session and complete copied history; other agent history is not rewritten. |
@@ -73,11 +75,13 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
-`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `l`. Unlinked terminals appear in `l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `f l`. Unlinked terminals appear in `f l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
 The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
 
-Project grouping is the default. Filtering by agent with `a` preserves the current project filter; use `C` to return to the full list. If a session has no usable working directory, you will be asked to choose one before restoring it.
+Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. All filtering now goes through `f`; standalone `a/o/l/A/C` and `C-c C-k` bindings are removed. `f A` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f A` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
+
+Project grouping is the default. Filtering by agent with `f a` preserves the current project filter; use `f c` to restore defaults. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
 ## Compact chat details
 
