@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 ;; Version: 0.1.0
 ;; URL: https://github.com/wowhxj/ashub.el
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.7.0"))
 ;; Keywords: tools, processes, convenience
 
 ;;; Commentary:
@@ -18,6 +18,7 @@
 (require 'ashub-summary)
 (require 'ashub-details)
 (require 'help-mode)
+(require 'transient)
 (require 'text-property-search)
 
 (declare-function ashub--opening-summary "ashub-open")
@@ -774,43 +775,64 @@ Keep the current project filter.  Never restore a session."
   (setq ashub--show-unsummarized (not ashub--show-unsummarized))
   (ashub--render))
 
-(defun ashub-filter-menu ()
-  "Show filters, toggles and ordering, then dispatch one selection."
+(defun ashub-filter-all-agents ()
+  "Show all agents while retaining the other view conditions."
   (interactive)
-  (let* ((agent (or ashub--agent-filter "全部"))
-         (project (ashub--one-line (or ashub--project-filter "全部")))
-         (live ashub--live-only)
-         (all ashub--show-unsummarized)
-         (grouping ashub--grouping)
-         (key
-          (save-window-excursion
-            (with-help-window "*ashub 筛选*"
-              (princ "会话筛选（条件叠加）\n\n筛选：\n------------\n")
-              (princ (format "P  按项目：%s\na  按 Agent：%s\n" project agent))
-              (princ "C  Claude Code\nx  Codex\np  Pi\nd  Dsh\n\n")
-              (princ "开关：\n------------\n")
-              (princ (format "l  是否 live session：%s\nh  是否显示隐藏 session：%s\n\n"
-                             (if live "开" "关") (if all "开" "关")))
-              (princ "排序：\n------------\n")
-              (princ (format "g  按 Agent 分组%s\nt  按时间倒序（再按恢复项目分组）%s\n\n"
-                             (if (eq grouping 'agent) "（当前）" "")
-                             (if (null grouping) "（当前）" "")))
-              (princ "其他：\n------------\nc  恢复默认\nq  取消 / 返回\n\n")
-              (princ "h 显示不摘要会话；仍遵循 Agent、项目、存活及内部/空/归档会话设置。\n"))
-            (read-char-choice "筛选 [P/a/C/x/p/d/l/h/g/t/c/q]："
-                              '(?P ?a ?C ?x ?p ?d ?l ?h ?g ?t ?c ?q ?\e)))))
-    (pcase key
-      (?P (ashub-filter-project))
-      (?a (ashub-filter-agent))
-      (?C (ashub-jump-claude))
-      (?x (ashub-jump-codex))
-      (?p (ashub-jump-pi))
-      (?d (ashub-jump-dsh))
-      (?l (ashub-toggle-live-filter))
-      (?h (ashub-toggle-unsummarized))
-      (?g (ashub-change-grouping))
-      (?t (ashub-sort-by-time))
-      (?c (ashub-clear-filters)))))
+  (setq ashub--agent-filter nil)
+  (ashub--render))
+
+(defun ashub--view-agent-label (label key)
+  "Return LABEL with its shortcut character KEY in bold."
+  (let ((start (string-match (regexp-quote key) label)))
+    (concat (substring label 0 start)
+            (propertize key 'face 'bold)
+            (substring label (1+ start)))))
+
+(defun ashub--view-description (field)
+  "Return the current Hub's menu description for FIELD."
+  (with-current-buffer transient--original-buffer
+    (pcase field
+      ('project (format "项目：%s" (truncate-string-to-width
+                                  (ashub--one-line (or ashub--project-filter "全部"))
+                                  32 nil nil "…")))
+      ('live (format "仅 live：%s" (if ashub--live-only "开" "关")))
+      ('hidden (format "显示隐藏：%s" (if ashub--show-unsummarized "开" "关")))
+      ('ordering (format "排列（当前：%s）"
+                         (pcase ashub--grouping
+                           ('agent "Agent 分组") ('project "项目分组")
+                           (_ "时间倒序")))))))
+
+(transient-define-prefix ashub-filter-menu ()
+  "Adjust the session view repeatedly; closing keeps applied changes."
+  :transient-suffix 'transient--do-call
+  :variable-pitch t
+  :display-action '(display-buffer-in-side-window
+                    (side . bottom) (slot . 0)
+                    (window-parameters . ((no-other-window . t))))
+  ["会话视图（立即生效）"
+   [:description (lambda ()
+                    (with-current-buffer transient--original-buffer
+                      (format "筛选（Agent：%s）" (or ashub--agent-filter "全部"))))
+    ("P" (lambda () (ashub--view-description 'project)) ashub-filter-project)
+    ("a" (lambda () (ashub--view-agent-label "全部 agent" "a")) ashub-filter-all-agents)
+    ("C" (lambda () (ashub--view-agent-label "Claude Code" "C")) ashub-jump-claude)
+    ("x" (lambda () (ashub--view-agent-label "Codex" "x")) ashub-jump-codex)
+    ("p" (lambda () (ashub--view-agent-label "pi" "p")) ashub-jump-pi)
+    ("d" (lambda () (ashub--view-agent-label "dsh" "d")) ashub-jump-dsh)
+    ("m" (lambda () (ashub--view-agent-label "Hermes" "m")) ashub-jump-hermes)]
+   ["开关"
+    ("l" (lambda () (ashub--view-description 'live)) ashub-toggle-live-filter)
+    ("h" (lambda () (ashub--view-description 'hidden)) ashub-toggle-unsummarized)]
+   [:description (lambda () (ashub--view-description 'ordering))
+    ("g" "按 Agent 分组" ashub-change-grouping)
+    ("t" "时间倒序 / 项目分组" ashub-sort-by-time)]
+   ["其他"
+    ("c" "恢复默认" ashub-clear-filters)
+    ("q" "关闭 / 返回" transient-quit-one :transient nil)]]
+  (interactive)
+  (unless (derived-mode-p 'ashub-mode)
+    (user-error "请在 ashub 会话列表中打开视图菜单"))
+  (transient-setup 'ashub-filter-menu))
 
 (defun ashub--conversation-text (markdown)
   "Extract dialogue from reference MARKDOWN, including Pi's plain speaker labels."
@@ -1032,13 +1054,14 @@ Keep the current project filter.  Never restore a session."
   "Browse historical agent sessions, without taking over external processes.
 
 N 新建；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
-f 筛选菜单：P/a 按项目/Agent 筛选；C/x/p/d 筛选 Claude/Codex/Pi/Dsh。
+f 筛选菜单：P/a 按项目/Agent 筛选；a 显示全部 Agent；C/x/p/d/m 筛选 Claude/Codex/Pi/Dsh/Hermes。
 P/a/l/t/c 也可在列表直接使用；l 仅存活；f h 显示隐藏会话；c 恢复默认。
 f g 按 Agent 分组；t 切换全局时间倒序/项目分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
 d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
 w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
 
-f 菜单分为筛选、开关、排序、其他；q 或 ESC 取消。
+f 打开底部会话视图菜单，可连续操作；P 补全后回到菜单；列表页 a 仍可补全选择 Agent。
+修改立即生效；q 或 C-g 关闭菜单，不撤销已生效的设置。
 默认隐藏不摘要会话；h 不改变内部/空/归档会话的既有显示设置。
 筛选条件叠加；恢复默认同时恢复 ashub-group-by 分组设置。
 仅存活模式仍显示尚未索引的终端，方便切换。

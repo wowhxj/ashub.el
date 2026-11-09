@@ -16,6 +16,7 @@ Browsing never starts a chat or sends a message. Press `RET` to resume a session
 ## Requirements
 
 - Emacs **29.1+**. The `use-package :vc` configuration below requires Emacs **30+**.
+- Transient **0.7.0+** for the session-view menu; install/update it if the bundled version is older.
 - Python **3.9+** for Claude, Codex, and Hermes history scanning; no extra Python packages are needed.
 - For Pi and DeepSeek Harness: recent versions of [emacs-pi](https://github.com/wowhxj/emacs-pi) and [emacs-dsh](https://github.com/wowhxj/emacs-dsh) with the public session-listing and restore APIs.
 - For Claude, Codex, and Hermes restoration: `ghostel` with its native module installed, plus the corresponding CLI on Emacs's `PATH`.
@@ -56,10 +57,11 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
 | `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
-| `f` | Open the filter menu with current values; choose `P/a/C/x/p/d/l/h/g/t/c`, or cancel with `q` / `ESC` / `C-g` |
+| `f` | Open the bottom Transient session-view menu; apply `P/a/C/x/p/d/m/l/h/g/t/c` repeatedly; `q` / `C-g` closes it without undoing changes |
 | `f h` | Toggle sessions excluded from summarization, retaining other filters |
-| `a` / `P` (or `f a` / `f P`) | Filter by agent / project |
-| `f C` / `f x` / `f p` / `f d` | Filter Claude Code / Codex / Pi / Dsh directly |
+| `a` / `P` (or `f P`) | Complete an agent / project filter |
+| `f a` | Show all agents, retaining other view conditions |
+| `f C` / `f x` / `f p` / `f d` / `f m` | Filter Claude Code / Codex / pi / dsh / Hermes directly |
 | `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
 | `S` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
 | `c` / `f c` | Restore default filters and grouping (hide sessions excluded from summarization) |
@@ -81,9 +83,9 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
 
-Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. The `f` menu separates filters, toggles, ordering and other actions. `P/a/l/t/c` also work directly in the list; `p` remains previous entry. `f h` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f h` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
+Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. The `f` menu separates filters, toggles, ordering and other actions. Changes update the list and menu immediately without closing it; project minibuffer completion returns to the menu; `a` clears only the agent filter without prompting. While the menu is open, `q` only closes it; list-page `q` still leaves the Hub. `P/a/l/t/c` also work directly in the list; `p` remains previous entry. `f h` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f h` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
 
-Project grouping is the default. Filtering by agent with `f a` preserves the current project filter; use `f c` to restore defaults. If a session has no usable working directory, you will be asked to choose one before restoring it.
+Project grouping is the default. Filtering by agent with `a` or the menu’s agent shortcuts preserves the current project filter; use `f c` to restore defaults. If a session has no usable working directory, you will be asked to choose one before restoring it.
 
 ## Compact chat details
 
