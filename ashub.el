@@ -575,12 +575,9 @@
   "Return current row's session, or signal a helpful error."
   (or (get-text-property (point) 'ashub-session) (user-error "请先选择一条会话")))
 
-(defun ashub-new-session ()
-  "Choose an agent (default Pi), then a project, and create a new session."
-  (interactive)
-  (let* ((choice (completing-read "新建 Agent（默认 pi）：" '("pi" "claude" "codex" "dsh" "hermes") nil t nil nil "pi"))
-         (agent (if (string-empty-p (string-trim choice)) 'pi (intern choice)))
-         (session (get-text-property (point) 'ashub-session))
+(defun ashub--new-session-for-agent (agent)
+  "Choose a project and create a new session for AGENT."
+  (let* ((session (get-text-property (point) 'ashub-session))
          (initial (file-name-as-directory
                    (or (and session (ashub--local-directory-p (ashub-session-cwd session))
                             (ashub-session-cwd session)) default-directory)))
@@ -764,6 +761,31 @@ Keep the current project filter.  Never restore a session."
     (concat (substring label 0 start)
             (propertize key 'face 'bold)
             (substring label (1+ start)))))
+
+(transient-define-prefix ashub-new-session ()
+  "Choose an agent with the shared shortcuts, then choose its project."
+  :variable-pitch t
+  :display-action '(display-buffer-in-side-window
+                    (side . bottom) (slot . 0)
+                    (window-parameters . ((no-other-window . t))))
+  ["新建会话（选择 Agent 后选择项目目录）"
+   ["Agent"
+    ("C" (lambda () (ashub--view-agent-label "Claude Code" "C"))
+     (lambda () (interactive) (ashub--new-session-for-agent 'claude)))
+    ("x" (lambda () (ashub--view-agent-label "Codex" "x"))
+     (lambda () (interactive) (ashub--new-session-for-agent 'codex)))
+    ("p" (lambda () (ashub--view-agent-label "pi" "p"))
+     (lambda () (interactive) (ashub--new-session-for-agent 'pi)))
+    ("d" (lambda () (ashub--view-agent-label "dsh" "d"))
+     (lambda () (interactive) (ashub--new-session-for-agent 'dsh)))
+    ("m" (lambda () (ashub--view-agent-label "Hermes" "m"))
+     (lambda () (interactive) (ashub--new-session-for-agent 'hermes)))]
+   ["其他"
+    ("q" "关闭 / 返回" transient-quit-one :transient nil)]]
+  (interactive)
+  (unless (derived-mode-p 'ashub-mode)
+    (user-error "请在 ashub 会话列表中打开新建菜单"))
+  (transient-setup 'ashub-new-session))
 
 (defun ashub--view-description (field)
   "Return the current Hub's menu description for FIELD."
@@ -1091,7 +1113,7 @@ Keep the current project filter.  Never restore a session."
 (define-derived-mode ashub-mode special-mode "ashub"
   "Browse historical agent sessions, without taking over external processes.
 
-N 新建；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
+N 打开新建菜单（C/x/p/d/m 选择 Agent，再选择项目）；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
 f 菜单：P 按项目筛选；a 显示全部 Agent；C/x/p/d/m 筛选 Claude/Codex/Pi/Dsh/Hermes。
 P/a/l/t/c 也可在列表直接使用；l 仅存活；f h 显示隐藏会话；c 恢复默认。
 f g 按 Agent 分组；t 切换全局时间倒序/项目分组；TAB 折叠/展开；g 刷新；D 项目目录重定向。
