@@ -59,11 +59,12 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
 | `f` | Open the bottom Transient session-view menu; apply `P/a/C/x/p/d/m/l/h/g/t/c` repeatedly; `q` / `C-g` closes it without undoing changes |
 | `f h` | Toggle sessions excluded from summarization, retaining other filters |
-| `a` / `P` (or `f P`) | Complete an agent / project filter |
+| `a` | Open the Agent Transient; use the same `a/C/x/p/d/m` shortcuts as `f`, and `q` to close |
+| `P` / `f P` | Complete a project filter |
 | `f a` | Show all agents, retaining other view conditions |
 | `f C` / `f x` / `f p` / `f d` / `f m` | Filter Claude Code / Codex / pi / dsh / Hermes directly |
-| `s` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
-| `S` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
+| `r` | Requeue the selected session's AI summary (requires `ashub-summary-mode`) |
+| `R` | Requeue all failed summaries, regardless of list filters (requires `ashub-summary-mode`) |
 | `c` / `f c` | Restore default filters and grouping (hide sessions excluded from summarization) |
 | `f g` | Group by agent, newest first within each group |
 | `t` / `f t` | Toggle global newest-first ordering / project grouping |
@@ -72,16 +73,16 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `l` / `f l` | Refresh and toggle live-session-only filtering in the Hub; `RET` switches to an open session buffer. `*` marks open rows |
 | `d` / `u` / `x` | Mark / unmark the current session / confirm permanent deletion of marked sessions |
 | `w` / `W` | Copy the full session ID to the clipboard / project path |
-| `R` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`). Missing projects show `[目录缺失]`. If a Pi session's recorded cwd is missing, restore forks it into the mapped directory and removes the old file only after verifying the live session and complete copied history; other agent history is not rewritten. |
+| `D` | Map a renamed/moved project directory to its new location (saved in `ashub-project-relocations`). Missing projects show `[目录缺失]`. If a Pi session's recorded cwd is missing, restore forks it into the mapped directory and removes the old file only after verifying the live session and complete copied history; other agent history is not rewritten. |
 | `g` / `!` | Refresh / show diagnostics |
-| `?` | Show full key bindings and column-marker help |
+| `?` | Open the Transient command menu; use `C-h m` for full mode help |
 | `q` | Leave the Hub and restore the previous window layout |
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
 `N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `f l`. Unlinked terminals appear in `f l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
 
-The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. Key hints occupy one line; press `?` for full help.
+The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. The header has no shortcut-hint row; press `?` for the command menu or `C-h m` for full help.
 
 Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. The `f` menu separates filters, toggles, ordering and other actions. Changes update the list and menu immediately without closing it; project minibuffer completion returns to the menu; `a` clears only the agent filter without prompting. While the menu is open, `q` only closes it; list-page `q` still leaves the Hub. `P/a/l/t/c` also work directly in the list; `p` remains previous entry. `f h` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f h` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
 
@@ -128,7 +129,7 @@ All times are positive seconds, configurable in your init file or the `ashub-sum
 - Requests use an isolated buffer without unrelated chat context, tools, or prompt transforms. Context-limit errors keep the old summary and stop blind retries rather than silently truncating. Change your gptel model and retry explicitly if needed. Transient backend failures back off the entire queue; configuration/authentication failures pause it until you retry or re-enable the mode.
 - Responses are checked against a fresh full read; reopening, changed content, deletion, or disabling the mode prevents stale callbacks overwriting a summary. Cancelling an already-sent request does not guarantee that the provider will not bill it.
 
-Press `s` to requeue a session or `S` to requeue all failed summaries, regardless of current list filters. Both preserve existing summaries and normal single-request concurrency, open-session safety and timing; `S` leaves in-flight work alone and reports the queued count. Use `!` for diagnostics, or `M-x ashub-summary-status` for background status. Details show summary time/model/errors and original queries. Outdated/failed states appear in the dedicated Summary status column, not inside either text column; previous summaries remain visible.
+Press `r` to requeue a session or `R` to requeue all failed summaries, regardless of current list filters. Both preserve existing summaries and normal single-request concurrency, open-session safety and timing; `R` leaves in-flight work alone and reports the queued count. Use `!` for diagnostics, or `M-x ashub-summary-status` for background status. Details show summary time/model/errors and original queries. Outdated/failed states appear in the dedicated Summary status column, not inside either text column; previous summaries remain visible.
 
 `ashub-summary-cache-file` defaults to `~/.cache/ashub/summaries.json` (respecting `XDG_CACHE_HOME`): an atomically written `0600` file with summaries, fingerprints and scheduling state, not full transcripts. Changing gptel's model does not automatically regenerate everything. Deleting a session through the Hub also removes its summary.
 

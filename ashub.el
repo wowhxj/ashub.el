@@ -210,20 +210,6 @@
         ((ashub-session-title session) (concat "[标题] " (ashub-session-title session)))
         (t "[首条用户消息未知]")))
 
-(defconst ashub--key-hints
-  "N新建 RET打开 s摘要 S重试失败 i详情 n/p移动 j搜索 f筛选 P项目 a代理 l存活 t排序 c默认 TAB折叠 g刷新 R重定向 d/u标记 x删除 !诊断 w/W复制 ?帮助 q退出"
-  "Compact descriptions of the Hub's primary commands.")
-
-(defun ashub--insert-key-hints ()
-  "Insert all primary command keys on one line, fitting narrow windows."
-  (insert (propertize
-           (if (<= (string-width ashub--key-hints)
-                   (window-body-width (get-buffer-window (current-buffer) t)))
-               ashub--key-hints
-             "N RET s摘要 S重试失败 i n/p j f筛选 P a l t c TAB g R d/u x ! w/W ? q")
-           'help-echo ashub--key-hints)
-          "\n\n"))
-
 (defun ashub--table-column (text width)
   "Format TEXT as a single-line column of display WIDTH."
   (truncate-string-to-width (ashub--one-line text) width nil ?\s "…"))
@@ -445,7 +431,7 @@
                     (ashub--one-line (or ashub--project-filter "全部"))
                     (if ashub--show-unsummarized "全部状态" "隐藏不摘要")
                     (if ashub--live-only "开" "关")))
-    (ashub--insert-key-hints)
+    (insert "\n")
     (ashub--insert-table-header layout)
     (when ashub--states
       (maphash
@@ -467,7 +453,7 @@
                                         (length group)
                                         (if (and (eq ashub--grouping 'project)
                                                  (ashub-session-cwd-missing-p (car group)))
-                                            "  [目录缺失：R 重定向]" ""))
+                                            "  [目录缺失：D 重定向]" ""))
                                 'face 'bold))
             (add-text-properties start (point) (list 'ashub-group name 'ashub-key (list 'group name))))
           (unless folded (dolist (session group) (ashub--insert-row session sessions layout))))))
@@ -692,15 +678,6 @@ Keep the current project filter.  Never restore a session."
   (setq ashub--grouping (if ashub--grouping nil 'project))
   (clrhash ashub--collapsed) (ashub--render))
 
-(defun ashub-filter-agent ()
-  "Set or clear agent filter with completion."
-  (interactive)
-  (let ((choice (completing-read "Agent：" '("全部" "claude" "codex" "pi" "dsh" "hermes") nil t)))
-    (setq ashub--agent-filter
-          (unless (or (string-empty-p (string-trim choice)) (equal choice "全部"))
-            (intern choice))))
-  (ashub--render))
-
 (defun ashub-filter-project ()
   "Set a literal project path filter, with history-based completion."
   (interactive)
@@ -802,6 +779,33 @@ Keep the current project filter.  Never restore a session."
                            ('agent "Agent 分组") ('project "项目分组")
                            (_ "时间倒序")))))))
 
+(transient-define-group ashub--agent-filter-group
+   [:description (lambda ()
+                    (with-current-buffer transient--original-buffer
+                      (format "筛选（Agent：%s）" (or ashub--agent-filter "全部"))))
+    ("a" (lambda () (ashub--view-agent-label "全部 agent" "a")) ashub-filter-all-agents)
+    ("C" (lambda () (ashub--view-agent-label "Claude Code" "C")) ashub-jump-claude)
+    ("x" (lambda () (ashub--view-agent-label "Codex" "x")) ashub-jump-codex)
+    ("p" (lambda () (ashub--view-agent-label "pi" "p")) ashub-jump-pi)
+    ("d" (lambda () (ashub--view-agent-label "dsh" "d")) ashub-jump-dsh)
+    ("m" (lambda () (ashub--view-agent-label "Hermes" "m")) ashub-jump-hermes)])
+
+(transient-define-prefix ashub-filter-agent ()
+  "Filter agents repeatedly with the same shortcuts as the session view menu."
+  :transient-suffix 'transient--do-call
+  :variable-pitch t
+  :display-action '(display-buffer-in-side-window
+                    (side . bottom) (slot . 0)
+                    (window-parameters . ((no-other-window . t))))
+  ["Agent 筛选（立即生效）"
+   ashub--agent-filter-group
+   ["其他"
+    ("q" "关闭 / 返回" transient-quit-one :transient nil)]]
+  (interactive)
+  (unless (derived-mode-p 'ashub-mode)
+    (user-error "请在 ashub 会话列表中打开 Agent 菜单"))
+  (transient-setup 'ashub-filter-agent))
+
 (transient-define-prefix ashub-filter-menu ()
   "Adjust the session view repeatedly; closing keeps applied changes."
   :transient-suffix 'transient--do-call
@@ -810,16 +814,9 @@ Keep the current project filter.  Never restore a session."
                     (side . bottom) (slot . 0)
                     (window-parameters . ((no-other-window . t))))
   ["会话视图（立即生效）"
-   [:description (lambda ()
-                    (with-current-buffer transient--original-buffer
-                      (format "筛选（Agent：%s）" (or ashub--agent-filter "全部"))))
-    ("P" (lambda () (ashub--view-description 'project)) ashub-filter-project)
-    ("a" (lambda () (ashub--view-agent-label "全部 agent" "a")) ashub-filter-all-agents)
-    ("C" (lambda () (ashub--view-agent-label "Claude Code" "C")) ashub-jump-claude)
-    ("x" (lambda () (ashub--view-agent-label "Codex" "x")) ashub-jump-codex)
-    ("p" (lambda () (ashub--view-agent-label "pi" "p")) ashub-jump-pi)
-    ("d" (lambda () (ashub--view-agent-label "dsh" "d")) ashub-jump-dsh)
-    ("m" (lambda () (ashub--view-agent-label "Hermes" "m")) ashub-jump-hermes)]
+   ["项目"
+    ("P" (lambda () (ashub--view-description 'project)) ashub-filter-project)]
+   ashub--agent-filter-group
    ["开关"
     ("l" (lambda () (ashub--view-description 'live)) ashub-toggle-live-filter)
     ("h" (lambda () (ashub--view-description 'hidden)) ashub-toggle-unsummarized)]
@@ -833,6 +830,47 @@ Keep the current project filter.  Never restore a session."
   (unless (derived-mode-p 'ashub-mode)
     (user-error "请在 ashub 会话列表中打开视图菜单"))
   (transient-setup 'ashub-filter-menu))
+
+(transient-define-prefix ashub-help-menu ()
+  "Show Hub commands; actions use the same keys as the session list."
+  :variable-pitch t
+  :display-action '(display-buffer-in-side-window
+                    (side . bottom) (slot . 0)
+                    (window-parameters . ((no-other-window . t))))
+  ["ashub 命令（C-h m 查看完整说明）"
+   ["会话"
+    ("N" "新建" ashub-new-session)
+    ("RET" "打开 / 恢复" ashub-open)
+    ("i" "详情 / 对话" ashub-details)
+    ("r" "生成摘要" ashub-summary-retry)
+    ("R" "重试失败摘要" ashub-summary-retry-failed)]
+   ["浏览"
+    ("n" "下一条" ashub-next-entry :transient t)
+    ("p" "上一条" ashub-previous-entry :transient t)
+    ("j" "搜索会话" ashub-search-all)
+    ("TAB" "折叠 / 展开" ashub-toggle-group :transient t)
+    ("g" "刷新" ashub-refresh)]
+   ["视图"
+    ("f" "会话视图" ashub-filter-menu)
+    ("a" "Agent 筛选" ashub-filter-agent)
+    ("P" "项目筛选" ashub-filter-project)
+    ("l" "切换仅 live" ashub-toggle-live-filter)
+    ("t" "时间 / 项目" ashub-sort-by-time)
+    ("c" "恢复默认" ashub-clear-filters)]
+   ["管理"
+    ("d" "标记删除" ashub-mark-delete)
+    ("u" "取消标记" ashub-unmark-delete)
+    ("x" "确认删除" ashub-execute-deletions)
+    ("D" "项目重定向" ashub-relocate-project)
+    ("!" "诊断" ashub-diagnostics)]
+   ["其他"
+    ("w" "复制 ID" ashub-copy-id)
+    ("W" "复制项目" ashub-copy-project)
+    ("q" "关闭 / 返回" transient-quit-one :transient nil)]]
+  (interactive)
+  (unless (derived-mode-p 'ashub-mode)
+    (user-error "请在 ashub 会话列表中打开命令菜单"))
+  (transient-setup 'ashub-help-menu))
 
 (defun ashub--conversation-text (markdown)
   "Extract dialogue from reference MARKDOWN, including Pi's plain speaker labels."
@@ -1003,7 +1041,7 @@ Keep the current project filter.  Never restore a session."
         (princ (format "摘要诊断：%s\n" ashub-summary--diagnostic)))
       (dolist (session (ashub--all-sessions))
         (when-let* ((entry (ashub-summary-entry session)) (error (plist-get entry :error)))
-          (princ (format "  [%s %s] %s（失败 %s 次；s 可重新排队）\n"
+          (princ (format "  [%s %s] %s（失败 %s 次；r 可重新排队）\n"
                          (ashub-session-agent session) (ashub-session-id session)
                          error (plist-get entry :failures)))))
       (princ "\n")
@@ -1043,9 +1081,9 @@ Keep the current project filter.  Never restore a session."
                      ("d" . ashub-mark-delete) ("u" . ashub-unmark-delete)
                      ("x" . ashub-execute-deletions)
                      ("w" . ashub-copy-id) ("W" . ashub-copy-project)
-                     ("R" . ashub-relocate-project) ("s" . ashub-summary-retry)
-                     ("S" . ashub-summary-retry-failed)
-                     ("!" . ashub-diagnostics) ("?" . describe-mode)
+                     ("D" . ashub-relocate-project) ("r" . ashub-summary-retry)
+                     ("R" . ashub-summary-retry-failed)
+                     ("!" . ashub-diagnostics) ("?" . ashub-help-menu)
                      ("q" . ashub-quit)))
       (define-key map (kbd (car entry)) (cdr entry)))
     map))
@@ -1054,21 +1092,21 @@ Keep the current project filter.  Never restore a session."
   "Browse historical agent sessions, without taking over external processes.
 
 N 新建；RET 打开/恢复；n/p 移动；j 搜索当前筛选结果（保留筛选）。
-f 筛选菜单：P/a 按项目/Agent 筛选；a 显示全部 Agent；C/x/p/d/m 筛选 Claude/Codex/Pi/Dsh/Hermes。
+f 菜单：P 按项目筛选；a 显示全部 Agent；C/x/p/d/m 筛选 Claude/Codex/Pi/Dsh/Hermes。
 P/a/l/t/c 也可在列表直接使用；l 仅存活；f h 显示隐藏会话；c 恢复默认。
-f g 按 Agent 分组；t 切换全局时间倒序/项目分组；TAB 折叠/展开；g 刷新；R 项目目录重定向。
+f g 按 Agent 分组；t 切换全局时间倒序/项目分组；TAB 折叠/展开；g 刷新；D 项目目录重定向。
 d 标记删除；u 取消标记；x 执行删除；i 详情/对话；! 诊断。
-w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 查看本帮助。
+w 复制 ID；W 复制项目；q 退出并恢复窗口布局；? 打开命令菜单；C-h m 查看完整模式说明。
 
-f 打开底部会话视图菜单，可连续操作；P 补全后回到菜单；列表页 a 仍可补全选择 Agent。
+f 打开底部会话视图菜单，可连续操作；P 补全后回到菜单；列表页 a 打开 Agent 专用 Transient，键位与 f 菜单一致。
 修改立即生效；q 或 C-g 关闭菜单，不撤销已生效的设置。
 默认隐藏不摘要会话；h 不改变内部/空/归档会话的既有显示设置。
 筛选条件叠加；恢复默认同时恢复 ashub-group-by 分组设置。
 仅存活模式仍显示尚未索引的终端，方便切换。
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。
-s 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。
-S 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
+r 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。
+R 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
 摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
 窄窗口隐藏项目列，可在分组标题、详情中查看项目。
 列标记：D=待删除，*=已打开，[预览]=投影消息，未知消息不作推断。

@@ -481,7 +481,7 @@ returning a cancellation function.  SUCCESS receives full transcript text."
                  (string-match-p "\\b\\(?:401\\|403\\)\\b\\|api.key\\|authentication\\|not installed\\|load-path"
                                  (format "%s" error)))
         (setq ashub-summary--paused-error (format "%s" error)
-              ashub-summary--diagnostic (format "gptel 暂停：%s；修复配置后按 s 或重新启用摘要模式" error)))
+              ashub-summary--diagnostic (format "gptel 暂停：%s；修复配置后按 r 或重新启用摘要模式" error)))
       (when (and (plist-get job :model) (not permanent))
         (cl-incf ashub-summary--backend-failures)
         (setq ashub-summary--next-request
