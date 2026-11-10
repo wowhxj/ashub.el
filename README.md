@@ -94,10 +94,11 @@ Project grouping is the default. Filtering by agent with `a` or the menu’s age
 Press `s`, then `RET` / `a` for **summary search** (default), or `f` for **full dialogue search**. Both use your default gptel backend/model to interpret natural-language questions and answer with session citations. This feature is independent of memory plugins. `j` remains local navigation of the filtered list.
 
 - Summary mode checks existing AI summaries only; missing summaries are counted, not replaced with previews or generated automatically. Known stale summaries are reported. Background summary mode need not be enabled.
-- Full mode independently enumerates all configured sources, including archives, ignoring Hub filters. Known internal, empty and subagent sessions are excluded. Only saved user/assistant text and code blocks are searched, not system messages, hidden reasoning or tool calls/results.
+- Full mode independently enumerates all configured sources, including archives, ignoring Hub filters. Both modes exclude sessions classified as “not summarized” by the Hub, including cached no-dialogue flags; ordinary pending or failed summaries do not cause exclusion. Only saved user/assistant text and code blocks are searched, not system messages, hidden reasoning or tool calls/results.
 - Every included text is checked in sequential batches with overlapping splits for long messages; there is no keyword prefilter or head/tail truncation. Whole-history searches can be slow and expensive. Source/read/model failures are reported as incomplete coverage.
 - **Submitting sends the selected history scope to your configured gptel backend.** Requests exclude unrelated gptel context, tools and prompt transforms. This module does not persist queries, transcripts or answers; provider retention policies still apply.
-- Results show answers, verified verbatim evidence and source identities. Click a citation or press `RET` to read details without launching an agent; full-mode citations locate the matching message when possible. `q` in those details returns to search. `g` asks a new independent question, `s` switches mode, `k` cancels, and `q` cancels and returns. Cancellation cannot guarantee avoided provider charges.
+- Results show answers, verified verbatim evidence and source identities. Use `n` / `p` to move between distinct session results and `RET` to read details, or click a citation, without launching an agent; full-mode citations locate the matching message when possible. `q` in those details returns to search. `g` asks a new independent question, `s` switches mode, `k` cancels, and `q` cancels and returns. Cancellation cannot guarantee avoided provider charges.
+- The screen is organized as answer, related sessions (identity and evidence combined), and collapsed search details. The sticky header reports running stage/batch progress or a terminal state. Partial results are not final until completion. Details `q` returns to search; search `q` returns to the Hub/original entry rather than cycling through buffer history.
 - Source IDs and quotes are validated against supplied text, but this does not prove model conclusions or guarantee semantic recall. Conflicting claims and insufficient evidence must be treated as such.
 
 Customize `ashub-search-batch-chars` (default 16000 characters) and `ashub-search-timeout` (180 seconds per request). The character budget is not an exact token/context estimate; reduce it for context-limit errors. Oversized evidence or non-shrinking recursive synthesis fails explicitly rather than silently truncating.
@@ -110,7 +111,8 @@ Agent messages sit on the **left**, users on the **right**, with separate light/
 
 - Each message's **复制** button copies its original text, without presentation padding/reflow.
 - `C-c C-w` copies the original exported conversation; ordinary region copying includes presentation whitespace.
-- `TAB` / `S-TAB` navigate buttons, `g` reflows cached content, `q` leaves details. Reopen with `i` to read newer dialogue.
+- `RET` resumes the exact session or switches to its live chat buffer; on a button, it still activates that button. Archived sessions must first be unarchived in their original client.
+- `TAB` / `S-TAB` navigate buttons, `g` reflows cached content, `q` leaves details (returning to search when opened there). Reopen with `i` to read newer dialogue.
 - Customize `ashub-details-message-width` (100 columns), `ashub-details-message-width-ratio` (0.76), and the `ashub-details-user-face` / `ashub-details-assistant-face` faces.
 
 This reader shows saved user/assistant text, not images, hidden reasoning or tool calls. It is separate from summary input and never modifies agent history.

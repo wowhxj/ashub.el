@@ -270,9 +270,25 @@ Tabs are expanded only for presentation; original message text is retained."
   (interactive)
   (ashub-details--render))
 
+(declare-function ashub--live-buffer-for-session "ashub" (session))
+(declare-function ashub-open-session "ashub-open" (session))
+
+(defun ashub-details-open ()
+  "Restore this session, or activate an existing button at point.
+Reuse the exact live session when it is already open; never send a message."
+  (interactive)
+  (if (button-at (point))
+      (push-button)
+    (unless ashub-details--session (user-error "没有可恢复的会话"))
+    (require 'ashub)
+    (let ((buffer (ashub--live-buffer-for-session ashub-details--session)))
+      (if buffer (ashub--display-full-buffer buffer)
+        (ashub-open-session ashub-details--session)))))
+
 (defvar ashub-details-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "RET") #'ashub-details-open)
     (define-key map (kbd "m") #'ashub-details-toggle-metadata)
     (define-key map (kbd "g") #'ashub-details-refresh)
     (define-key map (kbd "TAB") #'forward-button)
@@ -285,7 +301,7 @@ Tabs are expanded only for presentation; original message text is retained."
 Each message has a copy button for its exact original text.  C-c C-w
 copies the original conversation, without display-only reflow."
   (setq-local truncate-lines t display-line-numbers nil)
-  (setq-local header-line-format "  q 返回   m 详细信息   TAB 切换按钮   C-c C-w 复制原始对话")
+  (setq-local header-line-format "  RET 恢复会话（按钮上为操作按钮）   q 返回   m 详细信息   TAB 切换按钮   C-c C-w 复制原始对话")
   (add-to-invisibility-spec 'ashub-details-metadata))
 
 (defun ashub-details-show (session conversation stale)

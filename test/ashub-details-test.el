@@ -4,6 +4,33 @@
 (require 'cl-lib)
 (require 'ashub)
 
+(ert-deftest ashub-details-return-restores-the-exact-session-or-reuses-live-buffer ()
+  (with-temp-buffer
+    (ashub-details-mode)
+    (setq ashub-details--session (ashub-session-create :agent 'pi :id "exact-session"))
+    (let (opened displayed live)
+      (cl-letf (((symbol-function 'ashub--live-buffer-for-session)
+                 (lambda (session) (should (eq session ashub-details--session)) live))
+                ((symbol-function 'ashub-open-session) (lambda (session) (setq opened session)))
+                ((symbol-function 'ashub--display-full-buffer) (lambda (buffer) (setq displayed buffer))))
+        (call-interactively (key-binding (kbd "RET")))
+        (should (eq opened ashub-details--session))
+        (setq opened nil live (current-buffer))
+        (ashub-details-open)
+        (should-not opened)
+        (should (eq displayed live))))))
+
+(ert-deftest ashub-details-return-on-buttons-does-not-restore ()
+  (with-temp-buffer
+    (ashub-details-mode)
+    (let ((inhibit-read-only t) clicked)
+      (insert-text-button "复制" 'action (lambda (_) (setq clicked t)))
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'ashub-open-session)
+                 (lambda (&rest _) (ert-fail "button must not restore"))))
+        (ashub-details-open)
+        (should clicked)))))
+
 (defmacro ashub-details-test-with-view (conversation width &rest body)
   "Render CONVERSATION at WIDTH, then run BODY without reading history/models."
   (declare (indent 2) (debug t))

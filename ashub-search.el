@@ -14,6 +14,7 @@
 (declare-function gptel-request "gptel-request" (&optional prompt &rest args))
 (declare-function gptel-abort "gptel-request" (buffer))
 (declare-function gptel-backend-name "gptel" (backend))
+(declare-function ashub--summary-skip-reason "ashub" (session))
 
 (defun ashub-search--backend-name (backend)
   "Return BACKEND's public name without printing credentials."
@@ -33,19 +34,54 @@ This conservative character budget is not an exact tokenizer/context limit."
   buffer mode query backend model limit cancelled cancels request-buffer token
   (sources (make-hash-table :test #'eql)) (seen (make-hash-table :test #'equal))
   (total 0) (covered 0) (missing 0) (stale 0) (excluded 0)
-  (batches 0) (chars 0) errors evidence chunks claims (status "枚举来源"))
+  (batches 0) (chars 0) errors evidence chunks claims (status "枚举来源")
+  diagnostics expanded-diagnostics)
 (defvar-local ashub-search--run nil)
+(defvar-local ashub-search--origin nil)
+(defvar-local ashub-search--phase 'running)
+(defvar-local ashub-search--stage "枚举来源")
+(defvar-local ashub-search--batch-done 0)
+(defvar-local ashub-search--batch-total 0)
+
+(defun ashub-search--progress (run stage done total)
+  "Publish RUN's running STAGE and completed batch count DONE of TOTAL."
+  (when (ashub-search--live-p run)
+    (with-current-buffer (ashub-search--run-buffer run)
+      (setq ashub-search--stage stage
+            ashub-search--batch-done done ashub-search--batch-total total)
+      (setf (ashub-search--run-status run)
+            (format "搜索中：%s（批次 %d/%d）" stage done total)))
+    (ashub-search--render run)))
+
+(defun ashub-search--finish (run status)
+  "Mark RUN completed with final STATUS before rendering its results."
+  (when (ashub-search--live-p run)
+    (with-current-buffer (ashub-search--run-buffer run)
+      (setq ashub-search--phase 'completed))
+    (setf (ashub-search--run-status run) (concat "搜索结束：" status))
+    (ashub-search--render run)))
 
 (defun ashub-search--owned-p (run)
   "Whether RUN still belongs to its original buffer, even after cancellation."
   (and (buffer-live-p (ashub-search--run-buffer run))
        (eq run (buffer-local-value 'ashub-search--run (ashub-search--run-buffer run)))))
 
+(defun ashub-search--phase (run)
+  "Return RUN's phase, migrating a result buffer created before hot reload."
+  (with-current-buffer (ashub-search--run-buffer run)
+    (unless (local-variable-p 'ashub-search--phase)
+      (setq-local ashub-search--phase
+                  (cond ((string-match-p "失败" (ashub-search--run-status run)) 'failed)
+                        ((ashub-search--run-cancelled run) 'cancelled)
+                        ((string-match-p "完成\\|证据不足" (ashub-search--run-status run)) 'completed)
+                        (t 'running))))
+    ashub-search--phase))
+
 (defun ashub-search--live-p (run)
-  "Whether RUN still owns a live, uncancelled search buffer."
+  "Whether RUN still owns a live, running search buffer."
   (and (not (ashub-search--run-cancelled run))
-       (buffer-live-p (ashub-search--run-buffer run))
-       (eq run (buffer-local-value 'ashub-search--run (ashub-search--run-buffer run)))))
+       (ashub-search--owned-p run)
+       (eq (ashub-search--phase run) 'running)))
 
 (defun ashub-search--later (run function)
   "Schedule FUNCTION outside an adapter callback, provided RUN still owns it."
@@ -57,6 +93,61 @@ This conservative character budget is not an exact tokenizer/context limit."
 (defun ashub-search--note (run error)
   "Record an explicit coverage or request ERROR on RUN."
   (push (format "%s" error) (ashub-search--run-errors run)))
+
+(defun ashub-search--diagnostic (run agent note &optional kind)
+  "Group NOTE by AGENT, message and KIND on RUN, preserving every raw note."
+  (let* ((kind (or kind (ashub-diagnostic-kind note)))
+         (message (if (stringp note) note (plist-get note :message)))
+         (key (list kind agent message))
+         (group (assoc key (ashub-search--run-diagnostics run))))
+    (unless group
+      (setq group (list key))
+      (push group (ashub-search--run-diagnostics run)))
+    (setcdr group (cons note (cdr group)))
+    (when (eq kind 'read)
+      (ashub-search--note run (format "%s: %s" agent message)))))
+
+(defun ashub-search--toggle-diagnostic (button)
+  "Toggle BUTTON's diagnostic group without reading sources again."
+  (let ((run (button-get button 'ashub-run))
+        (key (button-get button 'ashub-diagnostic)))
+    (when (ashub-search--owned-p run)
+      (setf (ashub-search--run-expanded-diagnostics run)
+            (if (member key (ashub-search--run-expanded-diagnostics run))
+                (remove key (ashub-search--run-expanded-diagnostics run))
+              (cons key (ashub-search--run-expanded-diagnostics run))))
+      (ashub-search--render run))))
+
+(defun ashub-search--render-diagnostics (run)
+  "Insert grouped RUN diagnostics, exposing paths only on expansion."
+  (dolist (kind '(metadata stale freshness read))
+    (let ((groups (seq-filter (lambda (group) (eq (caar group) kind))
+                              (reverse (ashub-search--run-diagnostics run)))))
+      (when groups
+        (insert (format "%s：%d 项\n"
+                        (pcase kind
+                          ('metadata "来源元数据提示（非请求错误）")
+                          ('stale "摘要过期提示（不保证最新）")
+                          ('freshness "摘要时效未知（不保证最新）")
+                          (_ "来源读取诊断"))
+                        (apply #'+ (mapcar (lambda (group) (length (cdr group))) groups))))
+        (dolist (group groups)
+          (let* ((key (car group))
+                 (expanded (member key (ashub-search--run-expanded-diagnostics run))))
+            (insert-text-button
+             (format "%s %s · %s（%d 项）" (if expanded "▾" "▸")
+                     (nth 1 key) (nth 2 key) (length (cdr group)))
+             'follow-link t 'ashub-run run 'ashub-diagnostic key
+             'action #'ashub-search--toggle-diagnostic
+             'help-echo "展开/收起全部原始诊断详情（含路径）")
+            (insert "\n")
+            (when expanded
+              (dolist (note (reverse (cdr group)))
+                (insert "  • " (ashub-diagnostic-text note) "\n")
+                (when (and (listp note) (plist-get note :session))
+                  (insert (format "    来源 [%s] · ID: %s\n"
+                                  (plist-get note :source) (plist-get note :session))))))))
+        (insert "\n")))))
 
 (defun ashub-search--stop (run)
   "Invalidate RUN before cancelling every owned asynchronous operation."
@@ -75,16 +166,34 @@ This conservative character budget is not an exact tokenizer/context limit."
 (defun ashub-search-cancel ()
   "Cancel scans, reads and model requests, retaining the current display."
   (interactive)
-  (when ashub-search--run
+  (when (and ashub-search--run (ashub-search--live-p ashub-search--run))
+    (setq ashub-search--phase 'cancelled)
     (ashub-search--stop ashub-search--run)
-    (setf (ashub-search--run-status ashub-search--run) "已取消")
+    (setf (ashub-search--run-status ashub-search--run) "搜索结束：已取消")
     (ashub-search--render ashub-search--run)))
 
+(defun ashub-search--entry-buffer (buffer)
+  "Return BUFFER if it is an entry, otherwise a non-search/details buffer."
+  (if (and (buffer-live-p buffer)
+           (not (with-current-buffer buffer
+                  (derived-mode-p 'ashub-search-mode 'ashub-details-mode))))
+      buffer
+    (or (let ((hub (get-buffer "*ashub*")))
+          (when (and hub (with-current-buffer hub (derived-mode-p 'ashub-mode))) hub))
+        (seq-find (lambda (candidate)
+                    (and (not (string-prefix-p " " (buffer-name candidate)))
+                         (not (with-current-buffer candidate
+                                (derived-mode-p 'ashub-search-mode 'ashub-details-mode)))))
+                  (buffer-list))
+        (get-buffer-create "*scratch*"))))
+
 (defun ashub-search-quit ()
-  "Cancel the search and return to the previous buffer."
+  "Cancel a running search and return directly to its original entry buffer."
   (interactive)
-  (ashub-search-cancel)
-  (quit-window))
+  (let ((origin (ashub-search--entry-buffer ashub-search--origin)))
+    (ashub-search-cancel)
+    (when ashub-search--run (ashub-search--stop ashub-search--run))
+    (switch-to-buffer origin)))
 
 (defun ashub-search-again ()
   "Ask a new question in the current search mode."
@@ -142,47 +251,57 @@ This conservative character budget is not an exact tokenizer/context limit."
     (when current (push (nreverse current) groups))
     (nreverse groups)))
 
-(defun ashub-search--button (run source &optional quote)
+(defun ashub-search--button (run source &optional quote entry)
   "Insert a source button for RUN, SOURCE and optional verbatim QUOTE."
   (insert-text-button
    (format "[%d]" source) 'follow-link t 'ashub-run run 'ashub-source source
+    'ashub-result-entry entry
    'ashub-quote (or quote (plist-get (seq-find (lambda (item) (eql source (plist-get item :source)))
                                               (ashub-search--run-evidence run)) :quote))
    'action #'ashub-search--open-source
    'help-echo "异步读取完整对话；不启动 agent"))
 
+(defvar-local ashub-search--show-technical nil)
+
+(defun ashub-search--toggle-technical (_button)
+  "Toggle coverage and diagnostic details without making requests."
+  (setq ashub-search--show-technical (not ashub-search--show-technical))
+  (ashub-search--render ashub-search--run))
+
 (defun ashub-search--render (run)
   "Render RUN's progress, validated claims, evidence and coverage."
   (when (buffer-live-p (ashub-search--run-buffer run))
     (with-current-buffer (ashub-search--run-buffer run)
-      (let ((inhibit-read-only t) (position (point)))
+      (let ((inhibit-read-only t) (position (point))
+            (selected (when-let* ((button (button-at (point))))
+                        (and (button-get button 'ashub-result-entry)
+                             (button-get button 'ashub-source)))))
         (erase-buffer)
+        (setq-local header-line-format
+                    '(:eval (concat " " (if ashub-search--run
+                                             (ashub-search--run-status ashub-search--run) "")
+                                    "   n/p 结果  RET 详情  g 提问  s 模式  k 停止  q 返回")))
         (insert (format "语义搜索 · %s · %s\n模型：%s\n问题：%s\n\n"
                         (if (eq (ashub-search--run-mode run) 'summary) "摘要" "全文")
                         (ashub-search--run-status run)
                         (format "%s / %s" (ashub-search--backend-name (ashub-search--run-backend run)) (ashub-search--run-model run))
                         (ashub-search--run-query run)))
-        (insert (format "范围：全部配置来源（含归档、不使用首页筛选）\n会话：%d；已覆盖：%d；排除：%d；缺摘要：%d；过期摘要：%d\n模型批次：%d；已发送字符：%d；数据批次预算：%d\n\n"
-                        (ashub-search--run-total run) (ashub-search--run-covered run)
-                        (ashub-search--run-excluded run) (ashub-search--run-missing run)
-                        (ashub-search--run-stale run) (ashub-search--run-batches run)
-                        (ashub-search--run-chars run) (ashub-search--run-limit run)))
-        (when (eq (ashub-search--run-mode run) 'summary)
-          (insert "摘要模式只验证摘要原文，不等于全文证据；过期状态按来源修订提示判断。\n\n"))
+        (insert (propertize "回答\n" 'face 'bold))
+        (unless (ashub-search--run-claims run)
+          (insert (if (and (boundp 'ashub-search--phase) (eq ashub-search--phase 'running))
+                      "正在搜索与整理；下方为已发现的相关会话，尚非最终结果。\n\n"
+                    "尚无综合回答；可查看下方已发现的依据，或重新提问。\n\n")))
         (dolist (claim (ashub-search--run-claims run))
           (insert (plist-get claim :text) " ")
           (dolist (id (plist-get claim :sources)) (ashub-search--button run id) (insert " "))
           (insert "\n\n"))
-        (when (ashub-search--run-evidence run)
-          (insert "已验证的逐字证据（归并不删除原始证据）\n")
-          (dolist (item (ashub-search--run-evidence run))
-            (ashub-search--button run (plist-get item :source) (plist-get item :quote))
-            (insert " " (plist-get item :quote) "\n  " (plist-get item :reason) "\n\n")))
-        (insert "\n来源清单（完整 ID；点击编号读全文）\n")
+        (insert (propertize (format "相关会话 · %d 条（n/p 选择，RET 查看）\n\n"
+                                             (length (ashub-search--ids (ashub-search--run-evidence run) t)))
+                            'face 'bold))
         (maphash
          (lambda (id session)
             (when (memq id (ashub-search--ids (ashub-search--run-evidence run) t))
-           (ashub-search--button run id)
+           (ashub-search--button run id nil t)
            (insert (format " %s · %s · %s\n  ID: %s%s\n"
                            (ashub-session-agent session) (ashub-session-project session)
                            (if (ashub-session-last-active session)
@@ -190,20 +309,53 @@ This conservative character budget is not an exact tokenizer/context limit."
                                                    (seconds-to-time (ashub-session-last-active session)))
                              "时间未知")
                            (ashub-session-id session)
-                           (if (eq (ashub-session-archived session) t) " [归档]" "")))))
+                           (if (eq (ashub-session-archived session) t) " [归档]" "")))
+            (dolist (item (seq-filter (lambda (item) (eql id (plist-get item :source)))
+                                     (ashub-search--run-evidence run)))
+              (insert (propertize (if (eq (ashub-search--run-mode run) 'summary)
+                                     "  摘要依据：" "  原文依据：") 'face 'shadow)
+                      (plist-get item :quote) "\n"))
+            (insert "\n")))
          (ashub-search--run-sources run))
+        (insert-text-button
+         (format "%s 搜索详情 · 覆盖 %d/%d · 排除 %d · 缺摘要 %d · 过期 %d · 错误 %d"
+                 (if ashub-search--show-technical "▾" "▸")
+                 (ashub-search--run-covered run) (ashub-search--run-total run)
+                 (ashub-search--run-excluded run) (ashub-search--run-missing run)
+                 (ashub-search--run-stale run) (length (ashub-search--run-errors run)))
+         'follow-link t 'action #'ashub-search--toggle-technical)
+        (insert "\n")
+        (when ashub-search--show-technical
+          (insert (format "范围：全部配置来源，含归档，排除不摘要；不继承首页筛选。\n模型请求：%d 次 · 已发送字符：%d · 批次预算：%d\n"
+                          (ashub-search--run-batches run) (ashub-search--run-chars run)
+                          (ashub-search--run-limit run)))
+          (when (eq (ashub-search--run-mode run) 'summary)
+            (insert "仅依据摘要；摘要原文校验不等于全文事实验证，过期摘要不保证最新。\n"))
+          (ashub-search--render-diagnostics run))
         (when (ashub-search--run-errors run)
-          (insert "覆盖/错误（结果不代表完整无遗漏）\n")
-          (dolist (error (reverse (ashub-search--run-errors run))) (insert "• " error "\n")))
+          (insert (format "覆盖/错误：%d 项（结果不代表完整无遗漏）\n"
+                          (length (ashub-search--run-errors run))))
+          (dolist (error (delete-dups (reverse (ashub-search--run-errors run))))
+            (insert "• " error "\n")))
         (goto-char (min position (point-max)))
+        (when selected
+          (let ((button (next-button (point-min))) found)
+            (while (and button (not found))
+              (if (and (button-get button 'ashub-result-entry)
+                       (eql selected (button-get button 'ashub-source)))
+                  (setq found (button-start button))
+                (setq button (next-button (button-end button)))))
+            (when found (goto-char found))))
         (set-buffer-modified-p nil)))))
 
 (defun ashub-search--failed (run error)
   "Finish RUN with explicit ERROR, keeping verified evidence visible."
   (when (ashub-search--live-p run)
     (ashub-search--note run error)
+    (with-current-buffer (ashub-search--run-buffer run)
+      (setq ashub-search--phase 'failed))
     (ashub-search--stop run)
-    (setf (ashub-search--run-status run) "失败／覆盖不完整")
+    (setf (ashub-search--run-status run) "搜索结束：失败／覆盖不完整")
     (ashub-search--render run)))
 
 (defun ashub-search--ask (run data system success)
@@ -307,9 +459,10 @@ This conservative character budget is not an exact tokenizer/context limit."
 
 (defun ashub-search--answer (run items evidence-p)
   "Recursively answer/merge all ITEMS for RUN, preserving source coverage."
-  (let* ((groups (ashub-search--pack run items)) (queue groups) notes)
-    (setf (ashub-search--run-status run)
-          (if evidence-p "证据问答" "递归归并回答（原始证据保留）"))
+  (let* ((groups (ashub-search--pack run items)) (queue groups) notes
+         (stage (if evidence-p "证据问答" "递归归并回答（原始证据保留）"))
+         (done 0) (total (length groups)))
+    (ashub-search--progress run stage done total)
     (cl-labels
         ((next ()
            (when (ashub-search--live-p run)
@@ -318,17 +471,18 @@ This conservative character budget is not an exact tokenizer/context limit."
                    (ashub-search--ask
                     run (ashub-search--json (vconcat group)) ashub-search--answer-prompt
                     (lambda (data)
-                      (setq notes (append notes (ashub-search--claims data allowed)))
+                      (when (ashub-search--live-p run)
+                         (setq notes (append notes (ashub-search--claims data allowed)))
+                         (ashub-search--progress run stage (cl-incf done) total))
                       (next))))
                (if (= (length groups) 1)
                    (progn
-                     (setf (ashub-search--run-claims run) notes
-                           (ashub-search--run-status run)
-                           (if (or (ashub-search--run-errors run) (> (ashub-search--run-missing run) 0))
+                     (setf (ashub-search--run-claims run) notes)
+                      (ashub-search--finish
+                       run (if (or (ashub-search--run-errors run) (> (ashub-search--run-missing run) 0))
                                "部分完成（覆盖不足；语义相关性由模型判断）"
-                             "完成（语义相关性由模型判断）"))
-                     (ashub-search--render run))
-                 (when (and (not evidence-p)
+                             "完成（语义相关性由模型判断）")))
+                  (when (and (not evidence-p)
                             (>= (length (ashub-search--json (vconcat notes)))
                                 (length (ashub-search--json (vconcat items)))))
                    (error "归并未缩小文本；保留证据并停止，不截断"))
@@ -337,33 +491,40 @@ This conservative character budget is not an exact tokenizer/context limit."
 
 (defun ashub-search--extract (run)
   "Search every prepared chunk of RUN sequentially; then answer evidence."
-  (let ((batches (ashub-search--pack run (nreverse (ashub-search--run-chunks run)))))
-    (setf (ashub-search--run-chunks run) nil
-          (ashub-search--run-status run) (format "遍历全部文本（%d 批）" (length batches)))
+  (let* ((batches (ashub-search--pack run (nreverse (ashub-search--run-chunks run))))
+         (total (length batches)) (done 0) (stage "遍历全部文本"))
+    (setf (ashub-search--run-chunks run) nil)
+    (ashub-search--progress run stage done total)
     (cl-labels
         ((next ()
-           (if batches
-               (let ((batch (pop batches)))
-                 (ashub-search--ask
-                  run (ashub-search--json (vconcat batch)) ashub-search--extract-prompt
-                  (lambda (data)
-                    (let ((result (ashub-search--evidence data batch)))
-                      (dolist (item (car result))
-                        (cl-pushnew item (ashub-search--run-evidence run) :test #'equal))
-                      (when (> (cdr result) 0)
-                        (ashub-search--note run (format "拒绝 %d 条 source/quote 无效的模型证据" (cdr result)))))
-                    (next))))
-             (if (ashub-search--run-evidence run)
-                 (ashub-search--answer run (ashub-search--run-evidence run) t)
-               (setf (ashub-search--run-status run) (if (or (ashub-search--run-errors run)
+           (when (ashub-search--live-p run)
+             (if batches
+                 (let ((batch (pop batches)))
+                   (ashub-search--progress run stage done total)
+                   (ashub-search--ask
+                    run (ashub-search--json (vconcat batch)) ashub-search--extract-prompt
+                    (lambda (data)
+                      (when (ashub-search--live-p run)
+                        (let ((result (ashub-search--evidence data batch)))
+                          (dolist (item (car result))
+                            (cl-pushnew item (ashub-search--run-evidence run) :test #'equal))
+                          (when (> (cdr result) 0)
+                            (ashub-search--note run (format "拒绝 %d 条 source/quote 无效的模型证据" (cdr result)))))
+                        (ashub-search--progress run stage (cl-incf done) total)
+                        (next)))))
+               (if (ashub-search--run-evidence run)
+                   (ashub-search--answer run (ashub-search--run-evidence run) t)
+                 (ashub-search--finish
+                  run (if (or (ashub-search--run-errors run)
                               (> (ashub-search--run-missing run) 0))
                           "覆盖不完整且证据不足：无法回答；不代表历史不存在相关内容"
-                        "证据不足：已覆盖文本未检出有效证据，无法回答"))
-               (ashub-search--render run)))))
+                        "证据不足：已覆盖文本未检出有效证据，无法回答")))))))
       (next))))
 
 (defun ashub-search--collect (run sessions)
   "Read all eligible SESSIONS for RUN without launching any agent."
+  (require 'ashub)
+  (ashub-search--progress run "读取会话" 0 0)
   (cl-labels
       ((next ()
          (when (ashub-search--live-p run)
@@ -378,7 +539,7 @@ This conservative character budget is not an exact tokenizer/context limit."
                     (t
                      (puthash key t (ashub-search--run-seen run))
                      (cl-incf (ashub-search--run-total run))
-                     (if (not (ashub-summary--eligible-p session))
+                     (if (ashub--summary-skip-reason session)
                          (progn (cl-incf (ashub-search--run-excluded run))
                                 (ashub-search--later run #'next))
                        (let* ((id (1+ (hash-table-count (ashub-search--run-sources run))))
@@ -391,8 +552,15 @@ This conservative character budget is not an exact tokenizer/context limit."
                                (when (not (equal (ashub-summary--stamp session)
                                                  (plist-get entry :checked-stamp)))
                                  (cl-incf (ashub-search--run-stale run))
-                                 (ashub-search--note run (format "[%d] 摘要过期" id)))
-                             (error (ashub-search--note run (format "[%d] 摘要时效未知：%s" id (error-message-string err))))))
+                                 (ashub-search--diagnostic
+                                   run (ashub-session-agent session)
+                                   (list :message "摘要过期" :path (ashub-session-path session)
+                                         :source id :session (ashub-session-id session)) 'stale))
+                             (error (ashub-search--diagnostic
+                                      run (ashub-session-agent session)
+                                      (list :message (concat "摘要时效未知：" (error-message-string err))
+                                            :path (ashub-session-path session)
+                                            :source id :session (ashub-session-id session)) 'freshness))))
                          (if (eq (ashub-search--run-mode run) 'summary)
                              (progn
                                (if (and (stringp summary) (not (string-empty-p (string-trim summary))))
@@ -446,7 +614,7 @@ This conservative character budget is not an exact tokenizer/context limit."
                      (when (ashub-search--live-p run)
                        (setq sessions (append sessions items))
                        (dolist (note diagnostics)
-                         (ashub-search--note run (format "%s: %s" (plist-get source :agent) note)))
+                         (ashub-search--diagnostic run (plist-get source :agent) note))
                        (ashub-search--later run #'next)))
                    (lambda (error)
                      (when (ashub-search--live-p run)
@@ -491,7 +659,7 @@ This conservative character budget is not an exact tokenizer/context limit."
                                     (interactive)
                                     (if (buffer-live-p (ashub-search--run-buffer run))
                                         (switch-to-buffer (ashub-search--run-buffer run))
-                                      (quit-window)))))
+                                      (switch-to-buffer (ashub-search--entry-buffer nil))))))
                 (when index
                   (with-current-buffer "*ashub details*"
                     (goto-char (or (text-property-any (point-min) (point-max) 'ashub-turn-index index)
@@ -503,6 +671,28 @@ This conservative character budget is not an exact tokenizer/context limit."
       (push (lambda () (setq active nil) (when (functionp cancel) (funcall cancel)))
             (ashub-search--run-cancels run)))))
 
+(defun ashub-search--move-result (direction)
+  "Move to the next distinct source entry in DIRECTION, without wrapping."
+  (let* ((origin (point))
+         (buttons (let ((position (point-min)) result)
+                    (while (setq position (next-button position))
+                      (when (button-get position 'ashub-result-entry)
+                        (push (button-start position) result))
+                      (setq position (button-end position)))
+                    (nreverse result)))
+         (target (if (> direction 0)
+                     (seq-find (lambda (position) (> position origin)) buttons)
+                   (car (last (seq-filter (lambda (position) (< position origin)) buttons))))))
+    (if target (goto-char target) (message "没有更多搜索结果"))))
+
+(defun ashub-search-next-result ()
+  "Move to the next session result; RET opens its details."
+  (interactive) (ashub-search--move-result 1))
+
+(defun ashub-search-previous-result ()
+  "Move to the previous session result; RET opens its details."
+  (interactive) (ashub-search--move-result -1))
+
 (defvar ashub-search-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -510,6 +700,8 @@ This conservative character budget is not an exact tokenizer/context limit."
     (define-key map (kbd "k") #'ashub-search-cancel)
     (define-key map (kbd "g") #'ashub-search-again)
     (define-key map (kbd "s") #'ashub-search-menu)
+    (define-key map (kbd "n") #'ashub-search-next-result)
+    (define-key map (kbd "p") #'ashub-search-previous-result)
     (define-key map (kbd "RET") #'push-button)
     (define-key map (kbd "TAB") #'forward-button)
     (define-key map (kbd "<backtab>") #'backward-button)
@@ -517,7 +709,7 @@ This conservative character budget is not an exact tokenizer/context limit."
 
 (define-derived-mode ashub-search-mode special-mode "ashub search"
   "Ephemeral, read-only semantic search results with source buttons."
-  (setq-local header-line-format " q 取消并返回   k 取消   g 重新提问   s 搜索菜单   RET 查看来源")
+  (setq-local header-line-format " q 取消并返回   k 取消   g 重新提问   s 搜索菜单   n/p 上下结果   RET 查看详情")
   (add-hook 'kill-buffer-hook (lambda () (when ashub-search--run (ashub-search--stop ashub-search--run))) nil t))
 
 ;;;###autoload
@@ -537,18 +729,24 @@ No query, transcript or result is persisted by this module."
   (unless (and (integerp ashub-search-batch-chars) (>= ashub-search-batch-chars 2000)
                (numberp ashub-search-timeout) (> ashub-search-timeout 0))
     (user-error "搜索预算须至少 2000 字符，超时须为正数"))
-  (let* ((sources (ashub-configured-sources))
+  (let* ((origin (ashub-search--entry-buffer
+                  (if (derived-mode-p 'ashub-search-mode)
+                      ashub-search--origin
+                    (current-buffer))))
+         (sources (ashub-configured-sources))
          (limit (- ashub-search-batch-chars (length query) 1000))
          (buffer (get-buffer-create "*ashub search*")))
     (when (< limit 1000) (user-error "问题过长；请缩短问题或增大批次预算"))
     (with-current-buffer buffer
       (when ashub-search--run (ashub-search--stop ashub-search--run))
       (ashub-search-mode)
-      (setq ashub-search--run
+      (setq ashub-search--origin origin
+             ashub-search--phase 'running
+             ashub-search--run
             (ashub-search--make :buffer buffer :mode mode :query query :limit limit
                                 :backend (default-value 'gptel-backend)
                                 :model (default-value 'gptel-model)))
-      (ashub-search--render ashub-search--run)
+      (ashub-search--progress ashub-search--run "枚举来源" 0 0)
       (pop-to-buffer buffer)
       (ashub-search--scan ashub-search--run sources))))
 
