@@ -55,7 +55,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | --- | --- |
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
-| `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
+| `N` | Open the new-session Transient: `C/x/p/d/m` selects Claude Code/Codex/pi/dsh/Hermes, then choose or create a project directory; `q` closes without creating |
 | `s` | Semantic search / Q&A: Transient `RET` / `a` searches summaries (default); `f` searches full dialogue, with session citations |
 | `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
 | `f` | Open the bottom Transient session-view menu; apply `P/a/C/x/p/d/m/l/h/g/t/c` repeatedly; `q` / `C-g` closes it without undoing changes |

@@ -55,7 +55,7 @@
 | --- | --- |
 | `n` / `p` | 下一／上一条目 |
 | `RET` | 恢复当前会话 |
-| `N` | 新建：选择 agent（默认 Pi），再选择或输入项目目录；不存在时会创建 |
+| `N` | 打开新建 Transient：`C/x/p/d/m` 选择 Claude Code／Codex／pi／dsh／Hermes，再选择或输入项目目录；不存在时会创建，`q` 关闭而不新建 |
 | `s` | 语义搜索／问答：Transient 内 `RET` / `a` 搜摘要（默认），`f` 搜全文；使用 gptel 并附 session 来源 |
 | `j` | 搜索当前筛选结果；候选项与主列表列布局、顺序一致，可用 Vertico/Orderless 搜索，`RET` 定位且保留筛选条件 |
 | `f` | 打开底部 Transient 会话视图菜单，可连续按 `P/a/C/x/p/d/m/l/h/g/t/c`；`q` / `C-g` 关闭，保留已生效设置 |
