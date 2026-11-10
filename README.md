@@ -56,6 +56,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 | `n` / `p` | Next / previous entry |
 | `RET` | Resume the selected session |
 | `N` | Create a session: choose an agent (default Pi), then choose or create a project directory |
+| `s` | Semantic search / Q&A: Transient `RET` / `a` searches summaries (default); `f` searches full dialogue, with session citations |
 | `j` | Search the current filtered sessions in the same columns and order as the Hub; Vertico/Orderless filters candidates, and `RET` jumps to the selected row without changing filters |
 | `f` | Open the bottom Transient session-view menu; apply `P/a/C/x/p/d/m/l/h/g/t/c` repeatedly; `q` / `C-g` closes it without undoing changes |
 | `f h` | Toggle sessions excluded from summarization, retaining other filters |
@@ -87,6 +88,19 @@ The main content is split into **Summary | Latest user query | Summary status**.
 Sessions with the “not summarized” status (including subagents and no-dialogue sessions) are hidden by default. Ordinary pending, failed, or summary-disabled sessions remain visible. The `f` menu separates filters, toggles, ordering and other actions. Changes update the list and menu immediately without closing it; project minibuffer completion returns to the menu; `a` clears only the agent filter without prompting. While the menu is open, `q` only closes it; list-page `q` still leaves the Hub. `P/a/l/t/c` also work directly in the list; `p` remains previous entry. `f h` shows all summary statuses while retaining agent/project/live filters and the existing internal/empty/archive visibility settings. `f c` restores defaults. Search (`j`) retains the current filters; use `f h` first to include excluded sessions; live-only (`f l`) still includes unindexed live terminals for switching.
 
 Project grouping is the default. Filtering by agent with `a` or the menu’s agent shortcuts preserves the current project filter; use `f c` to restore defaults. If a session has no usable working directory, you will be asked to choose one before restoring it.
+
+## Semantic search and history Q&A
+
+Press `s`, then `RET` / `a` for **summary search** (default), or `f` for **full dialogue search**. Both use your default gptel backend/model to interpret natural-language questions and answer with session citations. This feature is independent of memory plugins. `j` remains local navigation of the filtered list.
+
+- Summary mode checks existing AI summaries only; missing summaries are counted, not replaced with previews or generated automatically. Known stale summaries are reported. Background summary mode need not be enabled.
+- Full mode independently enumerates all configured sources, including archives, ignoring Hub filters. Known internal, empty and subagent sessions are excluded. Only saved user/assistant text and code blocks are searched, not system messages, hidden reasoning or tool calls/results.
+- Every included text is checked in sequential batches with overlapping splits for long messages; there is no keyword prefilter or head/tail truncation. Whole-history searches can be slow and expensive. Source/read/model failures are reported as incomplete coverage.
+- **Submitting sends the selected history scope to your configured gptel backend.** Requests exclude unrelated gptel context, tools and prompt transforms. This module does not persist queries, transcripts or answers; provider retention policies still apply.
+- Results show answers, verified verbatim evidence and source identities. Click a citation or press `RET` to read details without launching an agent; full-mode citations locate the matching message when possible. `q` in those details returns to search. `g` asks a new independent question, `s` switches mode, `k` cancels, and `q` cancels and returns. Cancellation cannot guarantee avoided provider charges.
+- Source IDs and quotes are validated against supplied text, but this does not prove model conclusions or guarantee semantic recall. Conflicting claims and insufficient evidence must be treated as such.
+
+Customize `ashub-search-batch-chars` (default 16000 characters) and `ashub-search-timeout` (180 seconds per request). The character budget is not an exact token/context estimate; reduce it for context-limit errors. Oversized evidence or non-shrinking recursive synthesis fails explicitly rather than silently truncating.
 
 ## Compact chat details
 

@@ -17,6 +17,7 @@
 (require 'ashub-open)
 (require 'ashub-summary)
 (require 'ashub-details)
+(require 'ashub-search)
 (require 'help-mode)
 (require 'transient)
 (require 'text-property-search)
@@ -847,7 +848,8 @@ Keep the current project filter.  Never restore a session."
    ["浏览"
     ("n" "下一条" ashub-next-entry :transient t)
     ("p" "上一条" ashub-previous-entry :transient t)
-    ("j" "搜索会话" ashub-search-all)
+    ("j" "定位会话" ashub-search-all)
+     ("s" "语义搜索 / 问答" ashub-search-menu)
     ("TAB" "折叠 / 展开" ashub-toggle-group :transient t)
     ("g" "刷新" ashub-refresh)]
    ["视图"
@@ -1071,7 +1073,8 @@ Keep the current project filter.  Never restore a session."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (dolist (entry '(("N" . ashub-new-session) ("RET" . ashub-open)
-                     ("j" . ashub-search-all) ("f" . ashub-filter-menu)
+                     ("j" . ashub-search-all) ("s" . ashub-search-menu)
+                      ("f" . ashub-filter-menu)
                      ("P" . ashub-filter-project) ("a" . ashub-filter-agent)
                      ("l" . ashub-toggle-live-filter) ("t" . ashub-sort-by-time)
                      ("c" . ashub-clear-filters)
@@ -1105,6 +1108,7 @@ f 打开底部会话视图菜单，可连续操作；P 补全后回到菜单；�
 仅存活模式仍显示尚未索引的终端，方便切换。
 列表分为摘要、用户末句、摘要状态三列；没有 AI 摘要时，摘要列显示用户首句。
 各列鼠标悬停显示完整文本；原始首末句也保留在详情中。
+s 打开语义搜索菜单：RET/a 摘要搜索（默认），f 全文搜索；通过 gptel 回答并引用 session。
 r 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode。
 R 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
 摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
