@@ -29,6 +29,8 @@
 (declare-function emacs-pi-insert-file "emacs-pi")
 (declare-function emacs-dsh-read-session "emacs-dsh")
 (declare-function emacs-dsh-insert-file "emacs-dsh")
+(declare-function emacs-pi-runtime-live-sessions "emacs-pi-runtime")
+(declare-function emacs-claude-session-running-p "emacs-claude")
 (declare-function ghostel-paste-string "ghostel")
 
 (defcustom ashub-reference-directory
@@ -179,6 +181,26 @@ START returns a cancel function, called if waiting is interrupted."
                                            width nil ?\s "…")))
     (if face (propertize column 'face face) column)))
 
+(defconst ashub-reference--running-mark (propertize " ● running" 'face 'success)
+  "Suffix for sessions whose agent still runs in the background.")
+
+(defun ashub-reference--running-p (session pi-live)
+  "Whether SESSION still runs in the background.
+PI-LIVE is `emacs-pi-runtime-live-sessions', read once per picker.  Claude
+holders come from emacs-claude, terminal agents from the ashub tmux snapshot
+when it is fresh; sessions with no such signal are not marked."
+  (let ((id (ashub-session-id session))
+        (path (ashub-session-path session)))
+    (or (pcase (ashub-session-agent session)
+          ('pi (or (and id (member id pi-live))
+                   (and path (member (file-truename path) pi-live))))
+          ('claude (and id (fboundp 'emacs-claude-session-running-p)
+                        (emacs-claude-session-running-p id))))
+        (and (ashub-tmux-snapshot-fresh-p)
+             (member (plist-get (ashub-tmux-state-for-session session) :status)
+                     '("running" "stopping"))
+             t))))
+
 (defun ashub-reference--choices (sessions &optional width)
   "Return aligned reference choices for SESSIONS within display WIDTH.
 Keep Agent visible; narrow windows hide the project, not the user queries."
@@ -186,7 +208,14 @@ Keep Agent visible; narrow windows hide the project, not the user queries."
                                   (lambda (a b)
                                     (> (or (ashub-reference--user-time a) 0)
                                        (or (ashub-reference--user-time b) 0)))))
-         (width (or width (- (window-body-width (minibuffer-window)) 4)))
+         (pi-live (and (fboundp 'emacs-pi-runtime-live-sessions)
+                       (emacs-pi-runtime-live-sessions)))
+         (running (seq-filter (lambda (session)
+                                (ashub-reference--running-p session pi-live))
+                              records))
+         ;; Leave room for the running mark so marked rows still fit.
+         (width (- (or width (- (window-body-width (minibuffer-window)) 4))
+                   (if running (string-width ashub-reference--running-mark) 0)))
          (id-width (apply #'max 12
                           (mapcar (lambda (session)
                                     (length (ashub-short-id session sessions))) sessions)))
@@ -227,7 +256,9 @@ Keep Agent visible; narrow windows hide the project, not the user queries."
                                     (abbreviate-file-name cwd))
                                   (ashub-short-id session sessions))
              for count = (puthash label (1+ (gethash label seen 0)) seen)
-             collect (cons (propertize (if (> count 1) (format "%s #%d" label count) label)
+             collect (cons (propertize (concat (if (> count 1) (format "%s #%d" label count) label)
+                                               (when (memq session running)
+                                                 ashub-reference--running-mark))
                                        'ashub-reference-header header)
                            session))))
 
