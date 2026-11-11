@@ -64,7 +64,7 @@ owned tmux pane is retained; a caller must inspect before any retry."
           (setq process
                 (make-process
                  :name "ashub-runtime-manager" :buffer output :stderr errors
-                 :connection-type 'pipe :coding 'utf-8-unix :noquery t
+                 :connection-type 'pipe :coding 'utf-8-unix :noquery t :sentinel #'ignore
                  :command (list python "-I" "-B" ashub-tmux--helper-file operation
                                 "--runtime-root" (expand-file-name ashub-terminal-runtime-directory)
                                 "--tmux" tmux)))
@@ -74,12 +74,19 @@ owned tmux pane is retained; a caller must inspect before any retry."
             (accept-process-output process 0.04))
           (when (process-live-p process)
             (user-error "Terminal operation timed out; outcome unknown, inspect before retrying"))
-          (let ((reply (condition-case nil
+          ;; Exit notification need not mean Emacs has consumed the final pipe data.
+          (while (and (< (float-time) deadline) (accept-process-output process 0.01)))
+          (let ((reply (condition-case err
                            (with-current-buffer output
                              (goto-char (point-min))
                              (json-parse-buffer :object-type 'plist :array-type 'list
                                                 :null-object nil :false-object :json-false))
-                         (error (user-error "Terminal helper failed; check Python, tmux and bundled resources")))))
+                         (error
+                          (user-error
+                           "Terminal helper reply invalid (%s; exit=%s, stdout=%s bytes, stderr=%s bytes); outcome unknown, inspect before retrying"
+                           (car err) (process-exit-status process)
+                           (with-current-buffer output (buffer-size))
+                           (with-current-buffer errors (buffer-size)))))))
             (when (and (listp reply) (keywordp (car reply)) (plist-get reply :error))
               (user-error "%s" (plist-get reply :error)))
             (unless (zerop (process-exit-status process))

@@ -16,6 +16,38 @@
     (cl-letf (((symbol-function 'make-process) (lambda (&rest _) (ert-fail "Unexpected launch"))))
       (should-error (ashub-tmux-list) :type 'user-error))))
 
+(ert-deftest ashub-tmux-call-drains-output-after-process-exit ()
+  (let ((native-comp-enable-subr-trampolines nil) output delivered)
+    (cl-letf (((symbol-function 'ashub-tmux--tools) (lambda () '("python3" "tmux")))
+              ((symbol-function 'make-process)
+               (lambda (&rest args) (setq output (plist-get args :buffer)) 'fixture-manager))
+              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'process-send-eof) #'ignore)
+              ((symbol-function 'process-live-p) (lambda (_) nil))
+              ((symbol-function 'process-exit-status) (lambda (_) 0))
+              ((symbol-function 'accept-process-output)
+               (lambda (&rest _)
+                 (unless delivered
+                   (setq delivered t)
+                   (with-current-buffer output (insert "{\"status\":\"running\"}\n"))
+                   t))))
+      (should (equal (plist-get (ashub-tmux--call "inspect" nil) :status) "running"))
+      (should delivered))))
+
+(ert-deftest ashub-tmux-call-invalid-reply-reports-exit-without-private-stderr ()
+  (let* ((ashub-tmux--helper-file (make-temp-file "ashub-invalid-reply-" nil ".py"))
+         (private "fixture-private-do-not-expose") message)
+    (unwind-protect
+        (progn
+          (with-temp-file ashub-tmux--helper-file
+            (insert "import sys\nprint('" private "', file=sys.stderr)\nsys.exit(7)\n"))
+          (setq message (condition-case err (progn (ashub-tmux-list) nil)
+                          (user-error (error-message-string err))))
+          (should (string-match-p "exit=7" message))
+          (should (string-match-p "outcome unknown" message))
+          (should-not (string-match-p private message)))
+      (delete-file ashub-tmux--helper-file))))
+
 (ert-deftest ashub-tmux-real-public-lifecycle ()
   (skip-unless (executable-find ashub-tmux-program))
   (let* ((parent (make-temp-file "/tmp/ashub-tmux-ert-" t))
