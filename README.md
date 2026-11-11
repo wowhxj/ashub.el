@@ -13,13 +13,29 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 
 Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. Progress appears immediately in the echo area and header until readiness, failure, or timeout; a session being restored is also marked in its row.
 
+## Native Claude sessions
+
+Claude `RET` restoration and `N` creation use the native emacs-claude chat UI,
+not Ghostel/tmux. Update emacs-claude to include `emacs-claude-open-session` and
+`emacs-claude-create-session`. Hub passes the
+exact session ID and project directory, sends no message and has no terminal
+fallback. Its Claude source home must match `emacs-claude-config-directory`;
+configure CLI flags/environment in that client or use a source `:open-function`.
+A legacy tmux writer for the same session must exit before native restoration;
+Hub never kills or migrates it automatically. `N` always creates a fresh native
+Claude session without a history picker or initial user message.
+
+The main list uses a green `●` for connected/background sessions. A `*` after
+the **date** still denotes a source timestamp, not the live marker.
+
 ## Runtime observations (development)
 
 `g` also refreshes cached, read-only runtime observations. Native Pi/DSH need
 `emacs-pi-inspect-runtimes` and `emacs-dsh-inspect-host` from their updated
 source packages; Hub never installs or hot-patches them. Rendering makes no
 runtime queries. Background-instance labels mean backend presence, **not**
-model generation; stale/unknown observations stay visibly qualified. `!`
+model generation. Unknown/stale native Pi observations and DSH per-session
+runtime hints are not shown as row warnings; internal safety gates remain. `!`
 shows runtime API/freshness diagnostics.
 
 Automatic summaries require fresh, safe runtime observations before dispatch
@@ -42,7 +58,8 @@ still only detaches its UI.
 - Transient **0.7.0+** for the session-view menu; install/update it if the bundled version is older.
 - Python **3.9+** for Claude, Codex, and Hermes history scanning; no extra Python packages are needed.
 - For Pi and DeepSeek Harness: recent versions of [emacs-pi](https://github.com/wowhxj/emacs-pi) and [emacs-dsh](https://github.com/wowhxj/emacs-dsh) with the public session-listing and restore APIs.
-- For Claude, Codex, and Hermes restoration: `ghostel` with its native module installed, **tmux 3.2+** and the corresponding CLI on Emacs's `PATH` (persistent terminal ownership currently requires POSIX).
+- For Claude creation/restoration: emacs-claude with the public create/open session APIs and the Claude CLI.
+- For Codex/Hermes creation/restoration: `ghostel` with its native module installed, **tmux 3.2+** and the corresponding CLI on Emacs's `PATH` (persistent terminal ownership currently requires POSIX).
 - Native persistent Pi/managed DSH require their updated bundled Node helpers and Node.js **22.19+**.
 
 Only the integrations you use need their optional dependencies.
@@ -123,7 +140,7 @@ Run `M-x ashub` or press `C-c h` with the configuration above. The Hub fills the
 
 `d` can mark only successfully refreshed Claude/Pi sessions; `x` asks for confirmation and permanently deletes their session files. Codex, Hermes, DSH, custom sources, and stale data are not supported. Deletion cannot be undone.
 
-`N` opens the new session through the existing Pi/DSH client or the same terminal backend used for restoration. No first message is sent automatically. Claude terminals launched by `N` are linked to exact history IDs using the terminal PID and Claude's `sessions/<PID>.json` record. Linked sessions show `*` in the main list and retain their indexed date and preview in `f l`. Unlinked terminals appear in `f l` as `unindexed`; a shared project directory alone never establishes a match. `RET` switches directly to the terminal. Update emacs-pi and emacs-dsh to versions exposing `emacs-pi-create-session` and `emacs-dsh-create-session`.
+`N` creates through the native Claude/Pi/DSH clients or the Codex/Hermes terminal backend, without sending a first message. Claude creation always gets a fresh ID from emacs-claude; it never reuses a saved session or a legacy tmux writer. Update clients to provide their public create/open APIs. Existing legacy terminal identity discovery remains available for migration.
 
 The main content is split into **Summary | Latest user query | Summary status**. Summary shows the AI summary, or only the first user query until one has been generated; it no longer combines first/latest messages. The latest query remains independent. The status column explicitly distinguishes pending, generating, generated, outdated, failed, disabled and paused (Chinese labels). Hover for full untruncated column text and to identify whether Summary contains AI text or a first-query fallback. Original queries also remain in `i` details. Missing latest queries show `[末句未知]`, and DSH projections retain `[预览]`. Narrow windows hide Project but retain all three columns. Existing restore/directory warnings remain at the row end, with full warnings in the status tooltip when space is tight. The header has no shortcut-hint row; press `?` for the command menu or `C-h m` for full help.
 

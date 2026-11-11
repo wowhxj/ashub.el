@@ -13,11 +13,24 @@
 
 浏览列表不会启动聊天或发送消息。按 `RET` 恢复指定会话，按 `N` 新建会话。操作后立即在回显区和顶部显示进度，恢复的会话行也会标记；就绪、失败或超时后更新状态。
 
+## Claude 原生会话
+
+Claude 的 `RET` 恢复和 `N` 新建统一使用 emacs-claude 原生聊天 UI，不再走
+Ghostel/tmux。需同步更新 emacs-claude，以提供 `emacs-claude-open-session` 和
+`emacs-claude-create-session` 公开接口。Hub 传递精确 session ID
+和项目目录，不发送消息、不回退到终端；Claude 来源目录须与
+`emacs-claude-config-directory` 一致，CLI 参数/环境请在客户端配置，或使用来源的
+`:open-function`。同一会话若仍有旧 tmux writer，须先退出旧实例；Hub 不自动结束或迁移。
+`N` 使用 Claude/Pi/DSH 原生客户端或 Codex/Hermes 终端后端创建会话，不自动发送首条消息。Claude 始终由 emacs-claude 分配全新 ID，不复用历史会话或旧 tmux writer。需同步更新客户端以提供公开 create/open API；旧终端的身份发现仍保留，便于迁移。
+
+首页用绿色 `●` 标记连接/后台会话；日期后的 `*` 仍是来源时间标记，两者不同。
+
 ## 后台运行状态（开发中）
 
 `g` 同时异步刷新只读运行状态缓存，渲染不发运行时查询。Pi/DSH 需要更新后的客户端提供
 `emacs-pi-inspect-runtimes`、`emacs-dsh-inspect-host`；Hub 不自动安装或热更新客户端。
-“后台实例”只表示后端存在，不表示模型正在生成；stale/unknown 会明确标注，`!` 可查看
+“后台实例”只表示后端存在，不表示模型正在生成。Pi 未知/过期状态及 DSH 逐会话运行
+推断不再作为行警告显示，内部安全检查不变；`!` 可查看
 API 可用性和快照时效诊断。
 
 自动摘要发送前、接受结果前均检查新鲜且安全的运行状态。缓存刷新不重置 native 会话的
@@ -35,7 +48,8 @@ idle/stability 时钟。当前对 Pi 同一存储范围的存活 owner 保守阻
 - 会话视图菜单需要 Transient **0.7.0+**；内置版本较旧时请安装或升级。
 - Claude、Codex、Hermes 历史扫描需要 Python **3.9+**，无需额外 Python 包。
 - Pi、DeepSeek Harness 需要提供公开会话枚举和恢复 API 的新版 [emacs-pi](https://github.com/wowhxj/emacs-pi)、[emacs-dsh](https://github.com/wowhxj/emacs-dsh)。
-- Claude、Codex、Hermes 恢复需要安装好原生模块的 `ghostel`、**tmux 3.2+**，以及 Emacs `PATH` 中可找到的对应 CLI；持久终端所有权目前限 POSIX。
+- Claude 新建/恢复需要提供 create/open session 公开 API 的新版 emacs-claude 和 Claude CLI。
+- Codex/Hermes 新建/恢复需要安装好原生模块的 `ghostel`、**tmux 3.2+**，以及 Emacs `PATH` 中可找到的对应 CLI；持久终端所有权目前限 POSIX。
 - Pi / managed DSH 持久模式需要随更新客户端分发的 Node helper 和 Node.js **22.19+**。
 
 只需为自己使用的 agent 配置相应可选依赖。
@@ -112,7 +126,7 @@ idle/stability 时钟。当前对 Pi 同一存储范围的存活 owner 保守阻
 
 `d` 仅支持标记已成功刷新的 Claude/Pi 会话；`x` 会再次确认后永久删除对应会话文件。Codex、Hermes、DSH、自定义源及过期数据暂不支持删除。删除不可撤销。
 
-`N` 通过已有 Pi/DSH 客户端或与恢复相同的终端后端打开新会话，不自动发送首条消息。由 `N` 启动的 Claude 终端，会通过终端 PID 和 Claude 的 `sessions/<PID>.json` 记录关联准确的历史 session ID；关联后首页显示 `*`，`f l` 也使用该历史会话的日期和预览。尚未关联的终端会在 `f l` 筛选中以“未索引”显示，不会仅凭项目目录猜测关联；按 `RET` 可直接切回该终端。需要升级到提供 `emacs-pi-create-session`、`emacs-dsh-create-session` 的客户端版本。
+`N` 通过已有 Pi/DSH 客户端或现有终端创建后端打开新会话，不自动发送首条消息。由 `N` 启动的 Claude 终端，会通过终端 PID 和 Claude 的 `sessions/<PID>.json` 记录关联准确的历史 session ID；关联后首页显示绿色 `●`，`f l` 也使用该历史会话的日期和预览。尚未关联的终端会在 `f l` 筛选中以“未索引”显示，不会仅凭项目目录猜测关联；按 `RET` 可直接切回该终端。需要升级到提供 `emacs-pi-create-session`、`emacs-dsh-create-session` 的客户端版本。
 
 列表正文拆成「**摘要｜用户末句｜摘要状态**」三列。摘要列优先显示 AI 摘要；尚无成功生成的摘要时，只显示用户首句，不再拼接末句。用户末句独立展示，未知时显示 `[末句未知]`；DSH 投影消息保留 `[预览]` 标签。摘要状态明确区分「待生成、摘要中、已生成、待更新、摘要失败、不摘要（空、内部、无对话或子代理会话；`R` 不重试）、未启用、已暂停」，鼠标悬停可确认摘要列当前是 AI 摘要还是首句预览。各列只在展示时截断，悬停仍可查看完整文本；原始首末句也保留在 `i` 详情中。窄窗口隐藏项目列，保留三列；原有恢复/目录等会话标记仍在行尾，空间不足时其完整内容可在状态 tooltip 查看。顶部不再显示快捷键提示行；按 `?` 打开命令菜单，`C-h m` 查看完整说明。
 

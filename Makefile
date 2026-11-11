@@ -15,7 +15,7 @@ compile:
 
 test:
 	$(PYTHON) -B -m unittest discover -s test -p 'test_*.py' -v
-	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t)' -l test/ashub-test.el -l test/ashub-summary-test.el -l test/ashub-details-test.el -l test/ashub-search-test.el -l test/tmux-test.el -l test/runtime-inventory-test.el -l test/native-runtime-test.el -f ert-run-tests-batch-and-exit
+	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t)' -l test/ashub-test.el -l test/ashub-summary-test.el -l test/ashub-details-test.el -l test/ashub-search-test.el -l test/tmux-test.el -l test/runtime-inventory-test.el -l test/native-runtime-test.el -l test/claude-native-test.el -f ert-run-tests-batch-and-exit
 
 # Offline relocated build; retains staging artifacts and never installs packages.
 package-check:

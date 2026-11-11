@@ -21,6 +21,8 @@
 (require 'help-mode)
 (require 'transient)
 (require 'text-property-search)
+(declare-function emacs-claude-session-buffer "emacs-claude" (id))
+(declare-function emacs-claude-session-running-p "emacs-claude" (id))
 
 (declare-function ashub--opening-summary "ashub-open")
 (declare-function ashub-create-session "ashub-open")
@@ -138,6 +140,10 @@ This reads cached data only.  A runtime identifier is never a guessed native ID.
         (key (ashub-session-key session))
         (metadata (ashub-session-metadata session)))
     (or
+     (and (eq agent 'claude)
+          (ashub--claude-source-compatible-p (ashub-session-source session))
+          (fboundp 'emacs-claude-session-buffer)
+          (emacs-claude-session-buffer id))
      (let ((buffer (plist-get metadata :live-buffer))
            (process (plist-get metadata :live-process)))
        (and (buffer-live-p buffer) (process-live-p process) buffer))
@@ -174,6 +180,10 @@ This reads cached data only.  A runtime identifier is never a guessed native ID.
   "Whether SESSION has a UI or a cached nonterminal backend (including unknown).
 Inventory freshness is a separate scheduling guard, not an open/close event."
   (or (buffer-live-p (ashub--live-buffer-for-session session))
+      (and (eq (ashub-session-agent session) 'claude)
+           (ashub--claude-source-compatible-p (ashub-session-source session))
+           (fboundp 'emacs-claude-session-running-p)
+           (emacs-claude-session-running-p (ashub-session-id session)))
       (and (memq (ashub-session-agent session) '(pi dsh))
            (ashub-native-session-present-p session))
       (when-let* ((state (ashub-tmux-state-for-session session)))
@@ -365,7 +375,7 @@ Inventory freshness is a separate scheduling guard, not an open/close event."
   (insert (propertize
            (concat (propertize
                     (ashub--row-prefix layout " " "Agent" " " "日期*" "ID" "项目")
-                    'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=连接/后台实例（g 刷新）")
+                    'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，●=连接/后台实例（g 刷新）")
                    (propertize (ashub--table-column "摘要" (plist-get layout :summary))
                                'ashub-column 'summary
                                'help-echo "优先显示 AI 摘要；尚未生成时仅显示用户首句")
@@ -403,7 +413,8 @@ Inventory freshness is a separate scheduling guard, not an open/close event."
          (prefix (ashub--row-prefix
                   layout (if (gethash key ashub--delete-marks) "D" " ")
                   (symbol-name (ashub-session-agent session))
-                  (if (ashub--session-open-p session) "*" " ") time id
+                  (if (ashub--session-open-p session)
+                      (propertize "●" 'face 'success 'help-echo "会话已连接或有后台实例") " ") time id
                   (ashub--middle (ashub-session-project session)
                                  (max 1 (plist-get layout :project))))))
     (concat prefix
@@ -1226,7 +1237,7 @@ r 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode�
 R 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
 摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
 窄窗口隐藏项目列，可在分组标题、详情中查看项目。
-列标记：D=待删除，*=连接/后台实例（g 刷新），[预览]=投影消息，未知消息不作推断。
+列标记：D=待删除，●=连接/后台实例（g 刷新），[预览]=投影消息，未知消息不作推断。
 后台实例表示进程存活，不等于模型正在生成；原生 ID 未确认时不会猜测或复制。
 日期 *：来源更新时间/创建时间，不是已验证的交互时间。
 

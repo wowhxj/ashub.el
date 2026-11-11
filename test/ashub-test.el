@@ -842,7 +842,7 @@
       (let ((inhibit-read-only t))
         (cl-letf (((symbol-function 'ashub--session-open-p) (lambda (_) t)))
           (ashub--insert-row session (list session))
-          (should (string-match-p "claude +\\*" (buffer-string)))
+          (should (string-match-p "claude +●" (buffer-string)))
           (should-not (string-match-p "\\[已打开\\]" (buffer-string))))))))
 
 (ert-deftest ashub-unmark-delete-removes-current-mark ()
@@ -1448,7 +1448,7 @@
 (ert-deftest ashub-terminal-open-progress-does-not-claim-verified-resume ()
   (let ((ashub--opening (make-hash-table :test #'equal)) ready notices)
     (ashub-test-with-hub
-     (let ((session (ashub-test-session)))
+     (let ((session (ashub-test-session :agent 'codex :source (ashub-test-source 'codex))))
        (ashub-test-install (list session))
        (cl-letf (((symbol-function 'message)
                   (lambda (format-string &rest args)
@@ -1657,7 +1657,7 @@
              (should-not (ashub--session-open-p other))
              (ashub--render)
              (goto-char (point-min))
-             (should (re-search-forward "claude +\\*.*live-id" nil t))
+             (should (re-search-forward "claude +●.*live-id" nil t))
              (setq ashub--live-only t)
              (should (equal (ashub--visible-sessions) (list live)))
              (ashub--render)

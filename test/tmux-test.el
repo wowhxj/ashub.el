@@ -153,9 +153,9 @@
          (ashub-terminal-runtime-directory (expand-file-name "run" parent))
          (ashub--instances (make-hash-table :test #'equal))
          (ashub--opening (make-hash-table :test #'equal))
-         (source (list :agent 'claude :root root :program (executable-find ashub-python-program)
+         (source (list :agent 'codex :root root :program (executable-find ashub-python-program)
                        :args (list fixture)))
-         (session (ashub-session-create :agent 'claude :source source :id "exact-id"
+         (session (ashub-session-create :agent 'codex :source source :id "exact-id"
                                          :cwd project :path (expand-file-name "retained-history.jsonl" parent)))
          buffers first shown)
     (unwind-protect
