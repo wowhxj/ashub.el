@@ -18,6 +18,7 @@
 (defvar ashub--states)
 (defvar emacs-pi-reference-providers)
 (defvar emacs-dsh-reference-providers)
+(defvar emacs-claude-reference-providers)
 (defvar vertico-group-format)
 (defvar orderless-smart-case)
 (declare-function ashub-mode "ashub")
@@ -279,6 +280,9 @@ Ghostel terminals get a bracketed paste; Pi and DSH drafts get their own
 ;;;###autoload
 (with-eval-after-load 'emacs-dsh
   (add-to-list 'emacs-dsh-reference-providers '("ashub" . ashub-reference-provider)))
+;;;###autoload
+(with-eval-after-load 'emacs-claude
+  (add-to-list 'emacs-claude-reference-providers '("ashub" . ashub-reference-provider)))
 
 (provide 'ashub-reference)
 ;; Local Variables:
