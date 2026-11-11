@@ -185,7 +185,7 @@
           (should (equal (plist-get (ashub-session-metadata session) :runtime-id) (plist-get state :runtimeId)))
           (should (ashub--session-open-p session))
           (should-not (ashub--live-buffer-for-session session))
-          (should (string-match-p "后台实例" (ashub--row-status session)))
+          (should-not (string-match-p "后台实例\\|已连接" (ashub--row-status session)))
           (cl-letf (((symbol-function 'make-process) (lambda (&rest _) (ert-fail "Render must not probe processes"))))
             (ashub--render))
           (goto-char (point-min))
