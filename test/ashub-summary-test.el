@@ -33,6 +33,8 @@
           (ashub-summary--paused-error nil)
           (ashub-summary--next-scan most-positive-fixnum)
           (ashub-summary-mode t)
+          (ashub-tmux-snapshot-change-hook nil) (ashub-native-change-hook nil)
+          (ashub-native--cache (make-hash-table :test #'eq))
           (ashub-summary-idle-delay 300) (ashub-summary-stable-delay 300)
           (ashub-summary-request-interval 60) (ashub-summary-check-interval 30)
           (ashub-summary-read-timeout 120) (ashub-summary-request-timeout 180)
@@ -46,6 +48,13 @@
      (unwind-protect
          (cl-letf (((symbol-function 'float-time) (lambda (&optional _) ashub-summary-test-now))
                    ((symbol-function 'ashub-summary--open-p) (lambda (_) ashub-summary-test-open))
+                   ;; These scheduler unit fixtures have no real managed owners.
+                   ;; Runtime freshness/dispatch protection is covered separately.
+                   ((symbol-function 'ashub-tmux-snapshot-fresh-p) (lambda () t))
+                   ((symbol-function 'ashub-tmux-session-busy-p) (lambda (_) nil))
+                   ((symbol-function 'ashub-native-session-busy-p) (lambda (_) nil))
+                   ((symbol-function 'ashub-native-refresh-sources) #'ignore)
+                   ((symbol-function 'ashub-native-refresh-activities) #'ignore)
                    ((symbol-function 'ashub-summary--notify) #'ignore)
                    ((symbol-function 'require)
                     (lambda (feature &optional filename noerror)

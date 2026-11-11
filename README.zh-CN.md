@@ -13,15 +13,46 @@
 
 浏览列表不会启动聊天或发送消息。按 `RET` 恢复指定会话，按 `N` 新建会话。操作后立即在回显区和顶部显示进度，恢复的会话行也会标记；就绪、失败或超时后更新状态。
 
+## 后台运行状态（开发中）
+
+`g` 同时异步刷新只读运行状态缓存，渲染不发运行时查询。Pi/DSH 需要更新后的客户端提供
+`emacs-pi-inspect-runtimes`、`emacs-dsh-inspect-host`；Hub 不自动安装或热更新客户端。
+“后台实例”只表示后端存在，不表示模型正在生成；stale/unknown 会明确标注，`!` 可查看
+API 可用性和快照时效诊断。
+
+自动摘要发送前、接受结果前均检查新鲜且安全的运行状态。缓存刷新不重置 native 会话的
+idle/stability 时钟。当前对 Pi 同一存储范围的存活 owner 保守阻止摘要，直到能确认旧会话
+别名/写入者已静止。DSH 的 `running=false` 本身不证明空闲；新版 emacs-dsh 提供
+`emacs-dsh-inspect-session-activity`，用有界、被动的原生 `session/wait` 取得 driver
+静止、无待运行用户输入、无待处理审批/问题的证据。仅同 Host/会话的新鲜明确 idle
+证明允许已关闭 UI 的 DSH 摘要；接口缺失、timeout、busy 或不确定仍阻止发送/接受结果。
+仅供下次输入使用的 bootstrap context 不等于待运行用户任务。启用摘要后调度器会在生成
+期间持续刷新证据，不重置 idle 时钟。检查不激活会话、不停止 Host；DSH 退出仍仅断开 UI。
+
 ## 依赖
 
 - Emacs **29.1+**。下面的 `use-package :vc` 配置需要 Emacs **30+**。
 - 会话视图菜单需要 Transient **0.7.0+**；内置版本较旧时请安装或升级。
 - Claude、Codex、Hermes 历史扫描需要 Python **3.9+**，无需额外 Python 包。
 - Pi、DeepSeek Harness 需要提供公开会话枚举和恢复 API 的新版 [emacs-pi](https://github.com/wowhxj/emacs-pi)、[emacs-dsh](https://github.com/wowhxj/emacs-dsh)。
-- Claude、Codex、Hermes 恢复需要安装好原生模块的 `ghostel`，以及 Emacs `PATH` 中可找到的对应 CLI。
+- Claude、Codex、Hermes 恢复需要安装好原生模块的 `ghostel`、**tmux 3.2+**，以及 Emacs `PATH` 中可找到的对应 CLI；持久终端所有权目前限 POSIX。
+- Pi / managed DSH 持久模式需要随更新客户端分发的 Node helper 和 Node.js **22.19+**。
 
 只需为自己使用的 agent 配置相应可选依赖。
+
+## 安装资源与离线 staging
+
+必须一起保留产品 Lisp 模块（含 `ashub-tmux.el`、`ashub-native.el`）以及
+**`ashub-scan.py`、`ashub-summary-read.py`、`ashub-terminal.py`**，只复制 Lisp
+不完整。缺资源时明确报错，不会另起替代进程；helper 仅用标准库，无需额外 pip/npm 包。
+
+`make package-check` 在私有临时目录复制产品文件、生成 autoload/字节码，再整体移位，
+验证移位后加载及受控 Pi/DSH 生命周期。它不调用模型、不安装包，并保留文件/hash 清单和
+日志。可通过 `EMACS_PI_REPO`、`EMACS_DSH_REPO`、`EMACS_TEST_MARKDOWN`、
+`EMACS_TEST_WEBSOCKET` 指定本机源码和依赖路径。这只是 staging 验证，不等于远端发布包
+或实际用户安装验收。
+
+当前工作树开发变更须提交/发布后才能由远端安装取得，已安装包不会自动热更新。
 
 ## 安装
 

@@ -13,6 +13,9 @@
 ;;; Code:
 (require 'ashub-core)
 (require 'ashub-sources)
+(require 'ashub-tmux)
+(require 'ashub-native)
+(declare-function ashub--live-buffer-for-session "ashub" (session))
 (require 'json)
 
 (declare-function ashub--session-open-p "ashub" (session))
@@ -178,7 +181,11 @@ Below 1 leaves room for CJK text, JSON escaping, prompts and output."
   "Whether SESSION is open or currently being restored inside Emacs."
   (or (and (boundp 'ashub--opening)
            (gethash (ashub-session-key session) ashub--opening))
-      (ashub--session-open-p session)))
+      ;; Native cache uncertainty gates dispatch, never fake open/close events.
+      (if (memq (ashub-session-agent session) '(pi dsh))
+          (and (fboundp 'ashub--live-buffer-for-session)
+               (buffer-live-p (ashub--live-buffer-for-session session)))
+        (ashub--session-open-p session))))
 
 (defun ashub-summary--stamp (session)
   "Cheap source revision hint for SESSION, never the model-call fingerprint.
@@ -499,6 +506,8 @@ returning a cancellation function.  SUCCESS receives full transcript text."
     (and (eq job ashub-summary--job) session
          (not (plist-get job :invalid))
          (not (ashub-summary--open-p session))
+         (or (not (memq (ashub-session-agent session) '(pi dsh)))
+             (not (ashub-native-session-busy-p session)))
          (equal (plist-get job :stamp) (ashub-summary--stamp session)))))
 
 (defun ashub-summary--notify ()
@@ -650,6 +659,12 @@ Segments are summarized one at a time; notes too long are condensed again."
                (lambda (error) (ashub-summary--failed job error))))
       (error (ashub-summary--failed job (error-message-string err))))))
 
+(defun ashub-summary--managed-terminal-p (session)
+  "Whether SESSION uses the built-in persistent terminal owner."
+  (and (memq (ashub-session-agent session) '(claude codex hermes))
+       (not ashub-terminal-open-function)
+       (not (plist-get (ashub-session-source session) :open-function))))
+
 (defun ashub-summary--candidate ()
   "Return the next stable unused session, with fair progress for backfill."
   (let ((now (float-time)) candidates)
@@ -663,7 +678,13 @@ Segments are summarized one at a time; notes too long are condensed again."
                     (>= (- now (plist-get entry :closed-at)) (ashub-summary--seconds 'ashub-summary-idle-delay))
                     (>= (- now (or (plist-get entry :changed-at) now)) (ashub-summary--seconds 'ashub-summary-stable-delay))
                     (or changed (and (> failures 0) (< failures ashub-summary-max-attempts)))
-                    (or changed (>= now (or (plist-get entry :retry-at) 0))))
+                    (or changed (>= now (or (plist-get entry :retry-at) 0)))
+                    ;; Uncertainty gates dispatch, not open/close observation:
+                    ;; refreshing inventory must not reset the stability clock.
+                    (or (not (ashub-summary--managed-terminal-p session))
+                        (not (ashub-tmux-session-busy-p session)))
+                     (or (not (memq (ashub-session-agent session) '(pi dsh)))
+                         (not (ashub-native-session-busy-p session))))
            (push session candidates))))
      ashub-summary--sessions)
     ;; Oldest pending revision first prevents a busy project starving history.
@@ -681,7 +702,21 @@ Segments are summarized one at a time; notes too long are condensed again."
   (when ashub-summary-mode
     (condition-case err
         (progn
+          (when (and (not (ashub-tmux-snapshot-fresh-p))
+                     (seq-some #'ashub-summary--managed-terminal-p
+                               (hash-table-values ashub-summary--sessions)))
+            (ashub-tmux-refresh-snapshot))
+          (ashub-native-refresh-sources
+           (mapcar #'ashub-session-source (hash-table-values ashub-summary--sessions)))
           (ashub-summary--observe)
+          (ashub-native-refresh-activities
+           (seq-filter
+            (lambda (session)
+              (let ((entry (gethash (ashub-summary--key session) ashub-summary--cache)))
+                (and (not (ashub-summary--open-p session))
+                     (or (not (equal (plist-get entry :observed) (plist-get entry :checked-stamp)))
+                         (> (or (plist-get entry :failures) 0) 0)))))
+            (hash-table-values ashub-summary--sessions)))
           (when (>= (float-time) ashub-summary--next-scan)
             (setq ashub-summary--next-scan
                   (+ (float-time) (ashub-summary--seconds 'ashub-summary-scan-interval)))
@@ -693,7 +728,35 @@ Segments are summarized one at a time; notes too long are condensed again."
             (when-let* ((session (ashub-summary--candidate))) (ashub-summary--start session))))
       (error (setq ashub-summary--diagnostic (error-message-string err))))
     (setq ashub-summary--timer
-          (run-at-time (ashub-summary--seconds 'ashub-summary-check-interval) nil #'ashub-summary--tick))))
+          (run-at-time (if (seq-some (lambda (session) (memq (ashub-session-agent session) '(pi dsh)))
+                                  (hash-table-values ashub-summary--sessions))
+                           (min 5 (ashub-summary--seconds 'ashub-summary-check-interval))
+                         (ashub-summary--seconds 'ashub-summary-check-interval)) nil #'ashub-summary--tick))))
+
+(defun ashub-summary--runtime-updated ()
+  "Wake the opt-in scheduler after fresh inventory, even without an open Hub."
+  (when (and ashub-summary-mode (eq ashub-tmux-snapshot-status 'ready))
+    ;; Cancel only after any currently running scheduler pass has unwound.
+    (run-at-time 0 nil
+                 (lambda ()
+                   (when ashub-summary-mode
+                     (when (timerp ashub-summary--timer) (cancel-timer ashub-summary--timer))
+                     (setq ashub-summary--timer nil)
+                     (ashub-summary--tick))))))
+
+(add-hook 'ashub-tmux-snapshot-change-hook #'ashub-summary--runtime-updated)
+
+(defun ashub-summary--native-runtime-updated ()
+  "Wake after native cache completion without changing observation clocks."
+  (when (and ashub-summary-mode (seq-some #'ashub-native-fresh-p '(pi dsh)))
+    (run-at-time 0 nil
+                 (lambda ()
+                   (when ashub-summary-mode
+                     (when (timerp ashub-summary--timer) (cancel-timer ashub-summary--timer))
+                     (setq ashub-summary--timer nil)
+                     (ashub-summary--tick))))))
+
+(add-hook 'ashub-native-change-hook #'ashub-summary--native-runtime-updated)
 
 ;;;###autoload
 (define-minor-mode ashub-summary-mode

@@ -70,16 +70,44 @@
                  (abbreviate-file-name (ashub--root (plist-get source :root))))
                (if (plist-get source :profile) (format " [%s]" (plist-get source :profile)) "")))))
 
-(defun ashub--all-sessions ()
-  "Return all retained sessions in this Hub, without filtering."
+(defun ashub--history-sessions ()
+  "Return retained history sessions without adding runtime-only rows."
   (let (items)
     (when ashub--states
       (maphash (lambda (_key state) (setq items (append (plist-get state :items) items))) ashub--states))
     items))
 
+(defun ashub--runtime-only-sessions (history)
+  "Build durable runtime rows not already represented in HISTORY.
+This reads cached data only.  A runtime identifier is never a guessed native ID."
+  (let (sessions)
+    (dolist (state (ashub-tmux-current-snapshot))
+      (let* ((identity (plist-get state :source)) (agent (plist-get identity :agent))
+             (id (plist-get state :sessionId)) (runtime-id (plist-get state :runtimeId)))
+        (when (and (member agent '("claude" "codex" "hermes"))
+                   (not (member (plist-get state :status) '("finished" "exited" "failed")))
+                   (not (seq-some (lambda (session)
+                                    (and id (equal id (ashub-session-id session))
+                                         (ashub-tmux-state-source-p state (ashub-session-source session)))) history)))
+          (push (ashub-session-create
+                 :agent (intern agent)
+                 :source (list :agent (intern agent) :root (plist-get identity :root)
+                               :profile (plist-get identity :profile))
+                 :id (or id (concat "runtime:" runtime-id)) :path (concat "runtime:" runtime-id)
+                 :cwd (plist-get state :directory) :last-active (plist-get state :createdAt)
+                 :time-source 'created :title "持久终端实例"
+                 :metadata (list :unindexed-live t :runtime-id runtime-id :native-id id
+                                 :runtime-generation (plist-get state :generation))) sessions))))
+    (nreverse sessions)))
+
+(defun ashub--all-sessions ()
+  "Return retained histories and owned runtime rows, without process probes."
+  (let ((history (ashub--history-sessions)))
+    (append history (ashub--runtime-only-sessions history))))
+
 (defun ashub--claude-terminal-session-id (source)
   "Read the current terminal's exact Claude session ID for SOURCE, if known."
-  (when (eq (plist-get source :agent) 'claude)
+  (when (and (not ashub--terminal-state) (eq (plist-get source :agent) 'claude))
     (condition-case nil
         (let* ((identity (and (boundp 'ghostel-identity) ghostel-identity))
                (terminal-source
@@ -117,11 +145,19 @@
           (let* ((instance (gethash key ashub--instances))
                  (buffer (plist-get instance :buffer))
                  (process (plist-get instance :process)))
-            (and (buffer-live-p buffer) (process-live-p process) buffer)))
+            (and (buffer-live-p buffer) (process-live-p process)
+                 (not (buffer-local-value 'ashub--terminal-state buffer)) buffer)))
      (seq-some
       (lambda (buffer)
         (with-current-buffer buffer
           (cond
+           ((and ashub--terminal-state (process-live-p ashub--terminal-process)
+                 (ashub-tmux-state-source-p ashub--terminal-state (ashub-session-source session))
+                 (if-let* ((runtime-id (plist-get metadata :runtime-id)))
+                     (and (equal runtime-id (plist-get ashub--terminal-state :runtimeId))
+                          (equal (plist-get metadata :runtime-generation)
+                                 (plist-get ashub--terminal-state :generation)))
+                   (equal id (plist-get ashub--terminal-state :sessionId)))) buffer)
            ((and (eq agent 'claude)
                  (equal id (ashub--claude-terminal-session-id (ashub-session-source session)))) buffer)
            ((and (eq agent 'pi) (boundp 'emacs-pi--session) emacs-pi--session
@@ -135,8 +171,13 @@
       (buffer-list)))))
 
 (defun ashub--session-open-p (session)
-  "Whether SESSION currently has a live Emacs buffer/process."
-  (buffer-live-p (ashub--live-buffer-for-session session)))
+  "Whether SESSION has a UI or a cached nonterminal backend (including unknown).
+Inventory freshness is a separate scheduling guard, not an open/close event."
+  (or (buffer-live-p (ashub--live-buffer-for-session session))
+      (and (memq (ashub-session-agent session) '(pi dsh))
+           (ashub-native-session-present-p session))
+      (when-let* ((state (ashub-tmux-state-for-session session)))
+        (not (member (plist-get state :status) '("finished" "exited" "failed"))))))
 
 (defun ashub--unindexed-live-terminal-sessions ()
   "Return live ashub-created terminal sessions not yet tied to history IDs."
@@ -153,7 +194,7 @@
                                         (error nil)))))
                (process (or ashub--new-terminal-process
                             (and (boundp 'ghostel--process) ghostel--process))))
-          (when (and agent source (process-live-p process)
+          (when (and agent source (not ashub--terminal-state) (process-live-p process)
                      (not (when-let* ((id (ashub--claude-terminal-session-id source)))
                             (seq-some (lambda (session)
                                         (and (equal id (ashub-session-id session))
@@ -182,8 +223,7 @@
                         (or ashub--show-unsummarized
                             ;; Live-only is also a terminal switcher: retain
                             ;; terminals which have no history record yet.
-                            (and ashub--live-only
-                                 (plist-get (ashub-session-metadata item) :unindexed-live))
+                            (plist-get (ashub-session-metadata item) :unindexed-live)
                             (not (ashub--summary-skip-reason item)))
                         (or (not ashub--live-only) (ashub--session-open-p item))))
                  sessions))))
@@ -203,7 +243,11 @@
 
 (defun ashub--preview-text (session)
   "Return labelled display text without treating projections as raw messages."
-  (cond ((plist-get (ashub-session-metadata session) :unindexed-live)
+  (cond ((plist-get (ashub-session-metadata session) :runtime-id)
+         (if (plist-get (ashub-session-metadata session) :native-id)
+             "持久实例；历史尚未出现在索引中"
+           "持久实例；原生会话 ID 尚未确认（不会猜测）"))
+        ((plist-get (ashub-session-metadata session) :unindexed-live)
          "新建的 live 会话；尚未关联历史 ID")
         ((ashub-session-first-message session) (ashub-session-first-message session))
         ((plist-get (ashub-session-metadata session) :prompt-preview)
@@ -217,7 +261,9 @@
 
 (defun ashub--row-text (session)
   "Return SESSION's AI summary, falling back only to its first user message."
-  (or (ashub-summary-text session) (ashub--preview-text session)))
+  (if (plist-get (ashub-session-metadata session) :runtime-id)
+      (ashub--preview-text session)
+    (or (ashub-summary-text session) (ashub--preview-text session))))
 
 (defun ashub--last-user-text (session)
   "Return SESSION's latest user message, preserving projection/unknown labels."
@@ -230,7 +276,8 @@
   "Return why SESSION is never summarized, or nil."
   (let ((entry (ashub-summary-entry session)))
     (unless (plist-get entry :summary)
-      (cond ((plist-get entry :no-dialogue) "无对话")
+      (cond ((plist-get (ashub-session-metadata session) :runtime-id) "运行实例")
+            ((plist-get entry :no-dialogue) "无对话")
             ((ashub-summary--eligible-p session) nil)
             ((eq (ashub-session-internal session) t) "内部会话")
             ((eq (ashub-session-empty session) t) "空会话")
@@ -258,6 +305,22 @@
 (defun ashub--row-status (session)
   "Return the status suffix for SESSION without shifting its message columns."
   (concat (when (gethash (ashub-session-key session) ashub--opening) " [恢复中]")
+          (when (and (not (gethash (ashub-session-key session) ashub--opening))
+                     (memq (ashub-session-agent session) '(pi dsh))
+                     (ashub-native-cached (ashub-session-agent session)))
+            (if (not (ashub-native-fresh-p (ashub-session-agent session))) " [原生状态待刷新]"
+              (pcase (ashub-native-state-for-session session)
+                ('present (if (ashub--live-buffer-for-session session) " [已连接]" " [后台实例]"))
+                ('not-running " [Host未报告运行/活动未知]")
+                ('unknown " [原生状态未知]"))))
+          (when-let* ((state (ashub-tmux-state-for-session session)))
+            (unless (member (plist-get state :status) '("finished" "exited" "failed"))
+              (if (not (ashub-tmux-snapshot-fresh-p)) " [运行状态待刷新]"
+                (pcase (plist-get state :status)
+                  ("running" (cond ((not (ashub-tmux-state-source-p state (ashub-session-source session))) " [其他配置占用]")
+                                   ((ashub--live-buffer-for-session session) " [已连接]")
+                                   (t " [后台实例]")))
+                  ("stopping" " [结束中]") ("unknown" " [运行状态未知]")))))
           (when (ashub--stale-p session) " [旧]")
           (when (ashub-session-cwd-missing-p session) " [目录缺失]")
           (when-let* ((reason (ashub--summary-skip-reason session))) (format " [%s]" reason))))
@@ -305,7 +368,7 @@
   (insert (propertize
            (concat (propertize
                     (ashub--row-prefix layout " " "Agent" " " "日期*" "ID" "项目")
-                    'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=已打开")
+                    'help-echo "日期 *：来源更新时间/创建时间，并非已验证的交互时间；D=待删除，*=连接/后台实例（g 刷新）")
                    (propertize (ashub--table-column "摘要" (plist-get layout :summary))
                                'ashub-column 'summary
                                'help-echo "优先显示 AI 摘要；尚未生成时仅显示用户首句")
@@ -418,6 +481,9 @@
                       (concat "  " opening))
                     (format "  显示 %d/已载入 %d（过滤/隐藏 %d）"
                             (length sessions) total (- total (length sessions)))
+                    (pcase ashub-tmux-snapshot-status
+                      ('loading "  后台状态同步中") ('unknown "  后台状态未知（g 刷新）")
+                      (_ (unless (ashub-tmux-snapshot-fresh-p) "  后台状态快照待刷新")))
                     (if pending (format "  扫描中：%s" (string-join (nreverse pending) ", ")) "")
                     (if failures (format "  来源失败：%s" (string-join (nreverse failures) ", ")) "")
                     (if reads (format "  读取异常：%s" (string-join (nreverse reads) ", ")) "")
@@ -488,7 +554,16 @@
     (with-current-buffer buffer
       (when (derived-mode-p 'ashub-mode) (ashub--render)))))
 
+(defun ashub--refresh-runtime-display ()
+  "Render new cached inventory; never issue a query from rendering."
+  (ashub--refresh-opening-display))
+
 (add-hook 'ashub-open-state-change-hook #'ashub--refresh-opening-display)
+(add-hook 'ashub-open-state-change-hook (lambda () (ashub-tmux-refresh-snapshot t)))
+(add-hook 'ashub-tmux-snapshot-change-hook #'ashub--refresh-runtime-display t)
+(add-hook 'ashub-native-change-hook #'ashub--refresh-runtime-display t)
+(add-hook 'ashub-open-state-change-hook
+          (lambda () (ashub-native-refresh-sources (ashub-configured-sources) t)))
 
 (defun ashub--cancel-scans ()
   "Cancel background work and reject callbacks from the old generation."
@@ -538,6 +613,8 @@
   (let ((sources (ashub-configured-sources)) (old ashub--states)
         (buffer (current-buffer)))
     (ashub--cancel-scans)
+    (ashub-tmux-refresh-snapshot t)
+    (ashub-native-refresh-sources sources t)
     (setq ashub--states (make-hash-table :test #'equal))
     (dolist (source sources)
       (let* ((key (ashub-source-key source))
@@ -949,6 +1026,8 @@ Keep the current project filter.  Never restore a session."
                (not (plist-get (ashub-session-source session) :scan-function))
                (not (ashub--stale-p session)))
     (user-error "仅支持已刷新成功的内置 Claude/Pi 来源；当前会话不可删除"))
+  (when (plist-get (ashub-session-metadata session) :runtime-id)
+    (user-error "这是运行实例，不是可删除的历史文件"))
   (let* ((root (file-name-as-directory
                 (file-truename (ashub--root (plist-get (ashub-session-source session) :root)))))
          (path (ashub-session-path session)))
@@ -1013,7 +1092,10 @@ Keep the current project filter.  Never restore a session."
 (defun ashub-copy-id ()
   "Copy the full selected session ID to the kill ring and system clipboard."
   (interactive)
-  (let ((id (ashub-session-id (ashub--session-at-point))))
+  (let* ((session (ashub--session-at-point)) (metadata (ashub-session-metadata session))
+         (id (ashub-session-id session)))
+    (when (and (plist-get metadata :runtime-id) (not (plist-get metadata :native-id)))
+      (user-error "原生会话 ID 尚未确认；不会把运行实例标识当成会话 ID"))
     (kill-new id)
     (when (fboundp 'gui-set-selection)
       (gui-set-selection 'CLIPBOARD id))
@@ -1058,6 +1140,18 @@ Keep the current project filter.  Never restore a session."
       (princ "字段缺失：会话已载入，但部分原始字段不可用；预览/标题会单独标注。\n")
       (princ "读取异常：部分文件或消息未完整载入。来源失败：扫描失败，旧数据可能保留。\n")
       (princ "过滤/隐藏包括当前搜索条件，以及默认排除的内部、空和归档会话。\n\n")
+      (princ (format "终端实例快照：%s；时效：%s；本注册表记录：%d（只读查询，不启动实例）\n"
+                     ashub-tmux-snapshot-status
+                     (if (ashub-tmux-snapshot-fresh-p) "新鲜" "待刷新")
+                     (length (ashub-tmux-current-snapshot))))
+      (when ashub-tmux-snapshot-error
+        (princ (format "终端实例诊断：%s\n" ashub-tmux-snapshot-error)))
+      (dolist (agent '(pi dsh))
+        (let ((entry (ashub-native-cached agent)))
+          (princ (format "原生 %s：%s；时效：%s；存在性不是模型忙闲\n" agent
+                         (or (plist-get entry :status) 'unknown)
+                         (if (ashub-native-fresh-p agent) "新鲜" "待刷新")))
+          (when (plist-get entry :error) (princ (format "%s\n" (plist-get entry :error))))))
       (princ (format "后台摘要：%s；摘要处理中：%s；缓存记录：%d\n"
                      (if ashub-summary-mode "启用" "关闭")
                      (if ashub-summary--job "是" "否") (hash-table-count ashub-summary--cache)))
@@ -1135,7 +1229,8 @@ r 为当前会话重新排队生成摘要；需要先启用 ashub-summary-mode�
 R 批量重试所有失败摘要，不受列表筛选影响，仍遵守后台使用保护和请求间隔。
 摘要后台模式独立于列表运行，q 不会停止它；M-x ashub-summary-status 查看状态。
 窄窗口隐藏项目列，可在分组标题、详情中查看项目。
-列标记：D=待删除，*=已打开，[预览]=投影消息，未知消息不作推断。
+列标记：D=待删除，*=连接/后台实例（g 刷新），[预览]=投影消息，未知消息不作推断。
+后台实例表示进程存活，不等于模型正在生成；原生 ID 未确认时不会猜测或复制。
 日期 *：来源更新时间/创建时间，不是已验证的交互时间。
 
 \\{ashub-mode-map}"

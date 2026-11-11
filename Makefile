@@ -1,9 +1,9 @@
 EMACS ?= emacs
 PYTHON ?= python3
-ELISP = ashub-core.el ashub-sources.el ashub-open.el ashub-reference.el ashub-summary.el ashub-details.el ashub-search.el ashub.el
+ELISP = ashub-core.el ashub-sources.el ashub-tmux.el ashub-native.el ashub-open.el ashub-reference.el ashub-summary.el ashub-details.el ashub-search.el ashub.el
 DEV_ELISP = dev/readonly-init.el
 
-.PHONY: check structure compile test clean
+.PHONY: check structure compile test package-check clean
 
 check: structure compile test
 
@@ -15,7 +15,11 @@ compile:
 
 test:
 	$(PYTHON) -B -m unittest discover -s test -p 'test_*.py' -v
-	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t)' -l test/ashub-test.el -l test/ashub-summary-test.el -l test/ashub-details-test.el -l test/ashub-search-test.el -f ert-run-tests-batch-and-exit
+	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t)' -l test/ashub-test.el -l test/ashub-summary-test.el -l test/ashub-details-test.el -l test/ashub-search-test.el -l test/tmux-test.el -l test/runtime-inventory-test.el -l test/native-runtime-test.el -f ert-run-tests-batch-and-exit
+
+# Offline relocated build; retains staging artifacts and never installs packages.
+package-check:
+	$(PYTHON) -B test/package-stage.py
 
 clean:
 	rm -f $(ELISP:.el=.elc) $(ELISP:%=%~) test/ashub-test.el~ ashub-autoloads.el

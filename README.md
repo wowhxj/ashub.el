@@ -13,15 +13,57 @@ Browse and resume your coding-agent conversations from one Emacs buffer. Support
 
 Browsing never starts a chat or sends a message. Press `RET` to resume a session, or `N` to create one. Progress appears immediately in the echo area and header until readiness, failure, or timeout; a session being restored is also marked in its row.
 
+## Runtime observations (development)
+
+`g` also refreshes cached, read-only runtime observations. Native Pi/DSH need
+`emacs-pi-inspect-runtimes` and `emacs-dsh-inspect-host` from their updated
+source packages; Hub never installs or hot-patches them. Rendering makes no
+runtime queries. Background-instance labels mean backend presence, **not**
+model generation; stale/unknown observations stay visibly qualified. `!`
+shows runtime API/freshness diagnostics.
+
+Automatic summaries require fresh, safe runtime observations before dispatch
+and again before accepting a result. Native cache refreshes do not reset the
+summary idle/stability clocks. At present, a live Pi owner conservatively
+blocks summaries in its storage scope until alias/writer quiescence can be
+proved. DSH `running=false` alone never proves idle. Updated emacs-dsh adds
+`emacs-dsh-inspect-session-activity`: a bounded passive native `session/wait`
+read verifies driver quiescence, an empty actionable queue and no pending
+approval/question for the exact Host/session. Only a fresh explicit idle proof
+allows a closed DSH summary; missing APIs, timeout, busy or uncertainty block it.
+Context-only bootstrap items do not represent pending user turns. The opt-in
+scheduler maintains these observations while summaries run, without resetting
+idle clocks. No inspection activates a session or stops a Host; DSH chat quit
+still only detaches its UI.
+
 ## Requirements
 
 - Emacs **29.1+**. The `use-package :vc` configuration below requires Emacs **30+**.
 - Transient **0.7.0+** for the session-view menu; install/update it if the bundled version is older.
 - Python **3.9+** for Claude, Codex, and Hermes history scanning; no extra Python packages are needed.
 - For Pi and DeepSeek Harness: recent versions of [emacs-pi](https://github.com/wowhxj/emacs-pi) and [emacs-dsh](https://github.com/wowhxj/emacs-dsh) with the public session-listing and restore APIs.
-- For Claude, Codex, and Hermes restoration: `ghostel` with its native module installed, plus the corresponding CLI on Emacs's `PATH`.
+- For Claude, Codex, and Hermes restoration: `ghostel` with its native module installed, **tmux 3.2+** and the corresponding CLI on Emacs's `PATH` (persistent terminal ownership currently requires POSIX).
+- Native persistent Pi/managed DSH require their updated bundled Node helpers and Node.js **22.19+**.
 
 Only the integrations you use need their optional dependencies.
+
+## Package resources and offline staging
+
+Keep all product Lisp modules, including `ashub-tmux.el` / `ashub-native.el`,
+with **`ashub-scan.py`, `ashub-summary-read.py`, `ashub-terminal.py`**. A Lisp-only
+copy is incomplete; missing resources fail explicitly rather than launch a
+fallback. The helpers use standard libraries, not extra pip/npm dependencies.
+
+`make package-check` copies only product files to a private temporary build,
+generates autoloads/bytecode, relocates it, and tests loading plus controlled
+Pi/DSH lifecycle from the relocated tree. It invokes no model and installs
+nothing. It retains a file/hash manifest and logs for rerun. Configure
+`EMACS_PI_REPO`, `EMACS_DSH_REPO`, `EMACS_TEST_MARKDOWN`, and
+`EMACS_TEST_WEBSOCKET` for your local source/dependency paths. This is a staging
+check, not a published-package or real-user installation acceptance.
+
+Current worktree changes must be committed/published before a remote package
+install can include the new resources; installed packages are not hot-updated.
 
 ## Installation
 

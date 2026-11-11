@@ -6,6 +6,7 @@
 
 ;;; Code:
 (require 'ashub-core)
+(require 'ashub-tmux)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (declare-function emacs-pi-open-session "emacs-pi")
 (declare-function emacs-pi-fork-session-file "emacs-pi")
@@ -16,6 +17,11 @@
 (declare-function emacs-dsh-create-session "emacs-dsh")
 (declare-function emacs-dsh--source-identity "emacs-dsh" ())
 (defvar ghostel-module-auto-install)
+(defvar ghostel-query-before-killing)
+(defvar ghostel-kill-buffer-on-exit)
+(defvar-local ashub--terminal-state nil)
+(defvar-local ashub--terminal-process nil)
+(defvar-local ashub--terminal-nonce nil)
 
 (defcustom ashub-open-timeout 60 "Seconds before a creation or restore request times out."
   :type 'number :group 'ashub)
@@ -183,15 +189,15 @@
          (program (or (plist-get source :program) (symbol-name agent)))
          (environment (copy-sequence process-environment)))
     (unless variable (user-error "No terminal adapter for %s" agent))
-    (unless id
-      (let ((forbidden (pcase agent
-                         ('claude '("--resume" "-r" "--continue" "-c" "--session-id"))
-                         ('codex '("resume" "fork" "--resume" "--cd" "-C"))
-                         ('hermes '("--resume" "-r" "--continue" "--in")))))
-        (dolist (arg (plist-get source :args))
-          (unless (stringp arg) (user-error "Source arguments must be strings"))
-          (when (member (car (split-string arg "=")) forbidden)
-            (user-error "New session cannot use source lifecycle argument %s" arg)))))
+    (let ((forbidden (pcase agent
+                       ('claude '("--resume" "-r" "--continue" "-c" "--session-id" "--fork-session"))
+                       ('codex '("resume" "fork" "--resume" "--cd" "-C"))
+                       ('hermes '("--resume" "-r" "--continue" "-c" "--in" "--profile" "-p")))))
+      (dolist (arg (plist-get source :args))
+        (unless (stringp arg) (user-error "Source arguments must be strings"))
+        (when (or (member (car (split-string arg "=")) forbidden)
+                  (and (eq agent 'hermes) (string-prefix-p "-p" arg) (not (string-prefix-p "--" arg))))
+          (user-error "Source lifecycle arguments are managed by ashub: %s" arg))))
     (dolist (entry (plist-get source :environment))
       (unless (and (stringp entry) (string-match "\\`\\([^=]+\\)=\\(.*\\)\\'" entry))
         (user-error "Invalid source environment entry; expected NAME=VALUE"))
@@ -219,40 +225,166 @@
       (user-error "Invalid exact session ID"))
     (ashub--terminal-command-for-source (ashub-session-source session) directory id)))
 
-(defun ashub--open-terminal (session directory on-ready)
-  "Restore SESSION through ghostel in DIRECTORY, preserving exact argv.
-Invoke ON-READY with its buffer.  A live process proves launch, not that
-the agent has accepted the requested resume."
+(defun ashub--terminal-renderer-check ()
+  "Require the existing renderer without permitting module installation."
+  (let ((ghostel-module-auto-install nil)) (require 'ghostel nil t))
+  (unless (fboundp 'ghostel-exec)
+    (user-error "Missing ghostel-exec; configure ghostel before starting a persistent terminal")))
+
+(defun ashub--terminal-launch (source directory &optional id)
+  "Launch SOURCE in DIRECTORY with literal argv; ID is exact history."
+  (ashub--terminal-renderer-check)
+  (pcase-let* ((`(,program ,args ,environment) (ashub--terminal-command-for-source source directory id))
+               (process-environment environment)
+               (exec-path (append (parse-colon-path (getenv "PATH")) exec-path))
+               (executable (executable-find program)))
+    (unless executable (user-error "Missing %s executable; install/configure it yourself" program))
+    (ashub-tmux-ensure source directory executable args environment id)))
+
+(defun ashub-terminal--detach ()
+  "Release this buffer's controller only; never finish its agent."
+  (when (and ashub--terminal-state ashub--terminal-nonce)
+    (let ((state ashub--terminal-state) (nonce ashub--terminal-nonce))
+      (setq ashub--terminal-nonce nil)
+      (condition-case nil (ashub-tmux-controller "release" state nonce)
+        (error (message "ashub: UI detached; backend retained, controller release not confirmed")))))
+  (run-hooks 'ashub-open-state-change-hook))
+
+(defun ashub-terminal-finish ()
+  "Finish this owned instance, retaining history; kill the UI only on success."
+  (interactive)
+  (unless ashub--terminal-state (user-error "This buffer has no owned terminal instance"))
+  (when (or (not (called-interactively-p 'interactive))
+            (yes-or-no-p "End this agent and its owned process group? History will be kept. "))
+    (let* ((buffer (current-buffer)) (state ashub--terminal-state)
+           (result (ashub-tmux-finish (plist-get state :runtimeId) (plist-get state :generation))))
+      (unless (member (plist-get result :status) '("finished" "exited" "failed" "absent"))
+        (user-error "Finish not confirmed; keeping terminal UI"))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(define-minor-mode ashub-terminal-session-mode
+  "Persistent terminal UI: ordinary buffer kill detaches; C-c C-q finishes."
+  :lighter " Hub↔tmux"
+  :keymap (let ((map (make-sparse-keymap)))
+            (define-key map (kbd "C-c C-q") #'ashub-terminal-finish)
+            map))
+
+(defun ashub-terminal--runtime-updated ()
+  "Sync cached native IDs without changing a buffer's ownership generation."
+  (let ((states (ashub-tmux-current-snapshot)))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when ashub--terminal-state
+          (when-let* ((fresh (seq-find
+                             (lambda (state)
+                               (and (equal (plist-get state :runtimeId) (plist-get ashub--terminal-state :runtimeId))
+                                    (equal (plist-get state :generation) (plist-get ashub--terminal-state :generation))))
+                             states)))
+            (setq ashub--terminal-state fresh)))))))
+
+(add-hook 'ashub-tmux-snapshot-change-hook #'ashub-terminal--runtime-updated)
+
+(defun ashub--attach-terminal (state source on-ready &optional key)
+  "Attach one writable Ghostel UI to authenticated STATE for SOURCE."
+  (ashub--terminal-renderer-check)
+  (let* ((id (plist-get state :runtimeId)) (generation (plist-get state :generation))
+         (old (seq-find (lambda (buffer)
+                          (with-current-buffer buffer
+                            (and (equal id (plist-get ashub--terminal-state :runtimeId))
+                                 (equal generation (plist-get ashub--terminal-state :generation)))))
+                        (buffer-list))))
+    (if (and old (with-current-buffer old (process-live-p ashub--terminal-process)))
+        (progn
+          (with-current-buffer old (setq ashub--terminal-state state))
+          (when key (puthash key (list :buffer old :process (buffer-local-value 'ashub--terminal-process old))
+                            ashub--instances))
+          (funcall on-ready old))
+      (when old (kill-buffer old))
+      (let* ((nonce (substring (secure-hash 'sha256 (format "%s:%s:%s" (emacs-pid) (current-time) (random))) 0 32))
+             (buffer (generate-new-buffer (format "*ashub %s %s*" (plist-get source :agent) (substring id 0 12))))
+             (process-environment (append '("TMUX=") process-environment))
+             process committed)
+        (unwind-protect
+            (progn
+              (ashub-tmux-controller "claim" state nonce)
+              (pcase-let ((`(,program . ,args) (ashub-tmux-attach-command id generation)))
+                (with-current-buffer buffer
+                  (setq default-directory
+                        (if (file-directory-p (plist-get state :directory))
+                            (file-name-as-directory (plist-get state :directory))
+                          (file-name-directory ashub-tmux--helper-file)))
+                  (let ((ghostel-module-auto-install nil))
+                    ;; Do not store a raw command in bookmark/desktop identity:
+                    ;; replaying it would bypass the controller lease.
+                    (setq process (ghostel-exec buffer program args
+                                                `((kind . ashub-runtime) (runtime . ,id)
+                                                  (generation . ,generation) (agent . ,(plist-get source :agent))))))
+                  (unless (process-live-p process) (user-error "Ghostel did not attach a live client"))
+                  (setq-local ashub--terminal-state state ashub--terminal-nonce nonce
+                              ashub--terminal-process process
+                              ghostel-query-before-killing nil ghostel-kill-buffer-on-exit nil)
+                  (when (not (plist-get state :sessionId))
+                    (setq-local ashub--new-terminal-agent (plist-get source :agent)
+                                ashub--new-terminal-source source ashub--new-terminal-process process))
+                  (ashub-terminal-session-mode 1)
+                  (add-hook 'kill-buffer-hook #'ashub-terminal--detach t t)))
+              (let ((deadline (+ (float-time) 5)) attached)
+                (while (and (process-live-p process) (not attached) (< (float-time) deadline))
+                  (let ((current (ashub-tmux-inspect id)))
+                    (unless (and (equal id (plist-get current :runtimeId))
+                                 (equal generation (plist-get current :generation))
+                                 (member (plist-get current :status) '("running" "stopping")))
+                      (user-error "Terminal ownership changed while attaching; backend retained"))
+                    (with-current-buffer buffer (setq ashub--terminal-state current))
+                    (setq attached (equal (plist-get current :attachedClients) 1)))
+                  (unless attached (accept-process-output process 0.04)))
+                (unless attached
+                  (user-error "Attach not confirmed; backend retained (check Ghostel/TERM)")))
+              (puthash (or key (list 'runtime id)) (list :buffer buffer :process process) ashub--instances)
+              (setq committed t)
+              (funcall on-ready buffer))
+          (unless committed
+            (when (buffer-live-p buffer) (kill-buffer buffer))
+            (ignore-errors (ashub-tmux-controller "release" state nonce))))))))
+
+(defun ashub-terminal-attach-existing ()
+  "Select a durable running instance, including one not indexed by history yet."
+  (interactive)
+  (let* ((states (seq-filter (lambda (state) (member (plist-get state :status) '("running" "stopping" "unknown")))
+                             (ashub-tmux-list)))
+         (choices (mapcar (lambda (state)
+                            (cons (format "%s %s %s [%s]"
+                                          (plist-get (plist-get state :source) :agent)
+                                          (plist-get state :runtimeId)
+                                          (plist-get state :directory) (plist-get state :status)) state)) states)))
+    (unless choices (user-error "No retained terminal instances"))
+    (let* ((state (cdr (assoc (completing-read "Attach instance: " choices nil t) choices)))
+           (identity (plist-get state :source))
+           (source (list :agent (intern (plist-get identity :agent))
+                         :root (plist-get identity :root) :profile (plist-get identity :profile))))
+      (ashub--attach-terminal state source #'pop-to-buffer))))
+
+(defun ashub--open-terminal (session directory on-ready &optional runtime)
+  "Attach SESSION's owner first; only proven absence permits exact recovery."
   (let* ((key (ashub-session-key session)) (old (gethash key ashub--instances))
-         (buffer (plist-get old :buffer)) (process (plist-get old :process)))
-    (if (and (buffer-live-p buffer) (process-live-p process))
-        (funcall on-ready buffer)
+         (buffer (plist-get old :buffer)) (process (plist-get old :process))
+         (source (ashub-session-source session)))
+    (cond
+     ((and ashub-terminal-open-function (buffer-live-p buffer) (process-live-p process)) (funcall on-ready buffer))
+     (ashub-terminal-open-function
       (pcase-let* ((`(,program ,args ,environment) (ashub--terminal-command session directory))
                    (process-environment environment)
                    (exec-path (append (parse-colon-path (getenv "PATH")) exec-path))
                    (executable (executable-find program)))
-        (unless executable
-          (user-error "Missing %s executable; install/configure it yourself (:program)" program))
-        (if ashub-terminal-open-function
-            (funcall ashub-terminal-open-function session executable args directory environment on-ready)
-          (require 'ghostel nil t)
-          (unless (fboundp 'ghostel-exec)
-            (user-error "Missing ghostel-exec; load ghostel or configure ashub-terminal-open-function"))
-          (unless (buffer-live-p buffer)
-            (setq buffer (generate-new-buffer
-                          (format "*ashub %s %s*" (ashub-session-agent session)
-                                  (substring (ashub-session-id session) 0
-                                             (min 12 (length (ashub-session-id session))))))))
-          (with-current-buffer buffer
-            (setq default-directory directory)
-            (let ((ghostel-module-auto-install nil))
-              (setq process
-                    (ghostel-exec buffer executable args
-                                  `((kind . ashub) (session . ,key)
-                                    (command . (,executable . ,args)))))))
-          (unless (process-live-p process) (user-error "Ghostel did not start a live process"))
-          (puthash key (list :buffer buffer :process process) ashub--instances)
-          (funcall on-ready buffer))))))
+        (unless executable (user-error "Missing %s executable; install/configure it yourself" program))
+        (funcall ashub-terminal-open-function session executable args directory environment on-ready)))
+     (t
+      (let ((state (or runtime (ashub-tmux-find source (ashub-session-id session)
+                                               (plist-get (ashub-session-metadata session) :runtime-id)))))
+        (when (and (not state) (plist-get (ashub-session-metadata session) :runtime-id))
+          (user-error "Unindexed runtime ended; refresh instead of guessing a history ID"))
+        (ashub--attach-terminal (or state (ashub--terminal-launch source directory (ashub-session-id session)))
+                                source on-ready key))))))
 
 (defun ashub--dsh-source-check (session)
   "Fail closed if SESSION belongs to a different authenticated Host generation."
@@ -280,7 +412,7 @@ the agent has accepted the requested resume."
                (pop-to-buffer buffer)
                (delete-other-windows)
                (message (if terminal
-                            (concat verb "参数已提交；请在 agent 界面确认，Hub 未发送消息")
+                            (concat verb "已连接终端实例；请在 agent 界面确认历史身份，Hub 未发送消息")
                           (if (eq operation 'create)
                               "客户端已确认新会话就绪；Hub 未发送消息"
                             "客户端已确认会话就绪；Hub 未发送消息"))))))))
@@ -302,30 +434,10 @@ the agent has accepted the requested resume."
         (error (finish nil (error-message-string err)))))))
 
 (defun ashub--create-terminal (source directory on-ready)
-  "Start a fresh CLI through the same ghostel backend, never a resume argv."
+  "Create a fresh independently owned CLI, then attach its leased UI."
   (when ashub-terminal-open-function
     (user-error "Custom terminal backend needs a source :create-function"))
-  (pcase-let* ((`(,program ,args ,environment) (ashub--terminal-command-for-source source directory))
-               (process-environment environment)
-               (exec-path (append (parse-colon-path (getenv "PATH")) exec-path))
-               (executable (executable-find program)))
-    (unless executable (user-error "Missing %s executable; install/configure it yourself" program))
-    (require 'ghostel nil t)
-    (unless (fboundp 'ghostel-exec) (user-error "Missing ghostel-exec; configure ghostel first"))
-    (let ((buffer (generate-new-buffer (format "*ashub new %s %s*" (plist-get source :agent)
-                                               (file-name-nondirectory (directory-file-name directory))))))
-      (with-current-buffer buffer
-        (setq default-directory directory)
-        (let* ((ghostel-module-auto-install nil)
-               (process (ghostel-exec buffer executable args
-                                     `((kind . ashub-new) (agent . ,(plist-get source :agent))
-                                       (command . (,executable . ,args))))))
-          (unless (process-live-p process)
-            (user-error "Ghostel did not start a live process"))
-          (setq-local ashub--new-terminal-agent (plist-get source :agent)
-                      ashub--new-terminal-source source
-                      ashub--new-terminal-process process)))
-      (funcall on-ready buffer))))
+  (ashub--attach-terminal (ashub--terminal-launch source directory) source on-ready))
 
 (defun ashub--creation-source (agent)
   "Choose AGENT's sole source or its explicitly configured default source."
@@ -366,24 +478,61 @@ the agent has accepted the requested resume."
      terminal)))
 
 (defun ashub-open-session (session)
+  "Attach native Pi before disk/cwd/fork checks; restore other clients normally."
+  (if (or (not (eq (ashub-session-agent session) 'pi))
+          (plist-get (ashub-session-source session) :open-function))
+      (ashub--open-session-history session)
+    (let* ((source (ashub-session-source session))
+           (key (ashub-session-key session)))
+      (when (gethash key ashub--opening) (user-error "This session is already opening"))
+      (ashub--run-operation
+       key (format "pi %s" (ashub-session-id session)) 'restore
+       (lambda (ready error)
+         (require 'emacs-pi nil t)
+         (unless (fboundp 'emacs-pi-open-session) (user-error "Update emacs-pi: owner-first public API required"))
+         (emacs-pi-open-session
+          (ashub-session-path session) :expected-id (ashub-session-id session)
+          :session-directory (ashub--root (plist-get source :root)) :display 'none :on-ready ready :on-error error
+          :on-missing
+          (lambda ()
+            (condition-case err
+                (progn
+                  (when (eq (ashub-session-archived session) t) (user-error "Archived session; Hub will not unarchive"))
+                  (unless (file-directory-p (ashub--root (plist-get source :root)))
+                    (user-error "Storage source unavailable; no substitute profile"))
+                  (let ((directory (ashub--restore-directory session)))
+                    (if (ashub--pi-relocation-fork-needed-p session directory)
+                        (ashub--pi-relocation-fork session directory ready error)
+                      (emacs-pi-open-session (ashub-session-path session) :directory directory
+                                            :expected-id (ashub-session-id session)
+                                            :session-directory (ashub--root (plist-get source :root))
+                                            :display 'none :on-ready ready :on-error error))))
+              (error (funcall error (error-message-string err)))))))))))
+
+(defun ashub--open-session-history (session)
   "Restore selected SESSION with immediate feedback, without sending a message."
-  (when (eq (ashub-session-archived session) t)
-    (user-error "Archived session: unarchive in its own client, then refresh; Hub will not unarchive"))
   (let* ((key (ashub-session-key session))
          (source (ashub-session-source session))
-         (agent (ashub-session-agent session)))
+         (agent (ashub-session-agent session))
+         (terminal (and (memq agent '(claude codex hermes)) (not (plist-get source :open-function))))
+         (runtime (and terminal (not ashub-terminal-open-function)
+                       (ashub-tmux-find source (ashub-session-id session)
+                                        (plist-get (ashub-session-metadata session) :runtime-id)))))
+    (when (and (not runtime) (eq (ashub-session-archived session) t))
+      (user-error "Archived session: unarchive in its own client, then refresh; Hub will not unarchive"))
+    (when (and (not runtime) (plist-get (ashub-session-metadata session) :runtime-id))
+      (user-error "Unindexed runtime ended; refresh instead of guessing a history ID"))
     (when (gethash key ashub--opening)
       (user-error "This session is already opening; wait for readiness or timeout"))
-    (unless (or (eq agent 'dsh) (file-directory-p (ashub--root (plist-get source :root))))
+    (unless (or runtime (eq agent 'dsh) (file-directory-p (ashub--root (plist-get source :root))))
       (user-error "Storage source unavailable; refusing to create or use a substitute profile"))
-    (let ((directory (ashub--restore-directory session))
-          (terminal (and (memq agent '(claude codex hermes)) (not (plist-get source :open-function)))))
+    (let ((directory (if runtime (plist-get runtime :directory) (ashub--restore-directory session))))
       (ashub--run-operation
        key (format "%s %s" agent (substring (ashub-session-id session) 0 (min 12 (length (ashub-session-id session)))))
        'restore
        (lambda (ready error)
          (cond
-          (terminal (ashub--open-terminal session directory ready))
+          (terminal (ashub--open-terminal session directory ready runtime))
           ((plist-get source :open-function)
            (funcall (plist-get source :open-function) session directory ready error))
           ((eq agent 'pi)
