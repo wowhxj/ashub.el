@@ -22,7 +22,9 @@
 
 (defmacro ashub-test-with-hub (&rest body)
   "Run BODY in a fresh non-displayed Hub without starting a scan."
-  `(with-temp-buffer (ashub-mode) ,@body))
+  `(let ((ashub-native--cache (make-hash-table :test #'eq))
+         (ashub-tmux-snapshot nil))
+     (with-temp-buffer (ashub-mode) ,@body)))
 
 (defun ashub-test-install (sessions &optional diagnostics)
   "Install SESSIONS in the current test Hub, with optional DIAGNOSTICS."

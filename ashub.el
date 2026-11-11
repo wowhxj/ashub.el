@@ -306,13 +306,10 @@ Inventory freshness is a separate scheduling guard, not an open/close event."
   "Return the status suffix for SESSION without shifting its message columns."
   (concat (when (gethash (ashub-session-key session) ashub--opening) " [恢复中]")
           (when (and (not (gethash (ashub-session-key session) ashub--opening))
-                     (memq (ashub-session-agent session) '(pi dsh))
-                     (ashub-native-cached (ashub-session-agent session)))
-            (if (not (ashub-native-fresh-p (ashub-session-agent session))) " [原生状态待刷新]"
-              (pcase (ashub-native-state-for-session session)
-                ('present (if (ashub--live-buffer-for-session session) " [已连接]" " [后台实例]"))
-                ('not-running " [Host未报告运行/活动未知]")
-                ('unknown " [原生状态未知]"))))
+                     (eq (ashub-session-agent session) 'pi)
+                     (ashub-native-fresh-p 'pi)
+                     (eq (ashub-native-state-for-session session) 'present))
+            (if (ashub--live-buffer-for-session session) " [已连接]" " [后台实例]"))
           (when-let* ((state (ashub-tmux-state-for-session session)))
             (unless (member (plist-get state :status) '("finished" "exited" "failed"))
               (if (not (ashub-tmux-snapshot-fresh-p)) " [运行状态待刷新]"

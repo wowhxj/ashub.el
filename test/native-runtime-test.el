@@ -58,6 +58,30 @@
       (should (string-match-p "后台实例" (ashub--row-status session)))
       (should (ashub-native-session-busy-p session))))))
 
+(ert-deftest ashub-native-row-pi-only-shows-confirmed-instances ()
+  (ashub-native-test-state
+    (cl-letf (((symbol-function 'ashub-native-fresh-p) (lambda (_agent) t)))
+      (dolist (state '(none unknown not-running))
+        (cl-letf (((symbol-function 'ashub-native-state-for-session) (lambda (_session) state)))
+          (should (equal (ashub--row-status session) ""))))
+      (cl-letf (((symbol-function 'ashub-native-state-for-session) (lambda (_session) 'present)))
+        (should (equal (ashub--row-status session) " [后台实例]"))
+        (cl-letf (((symbol-function 'ashub--live-buffer-for-session) (lambda (_session) (current-buffer))))
+          (should (equal (ashub--row-status session) " [已连接]")))))
+    (cl-letf (((symbol-function 'ashub-native-fresh-p) (lambda (_agent) nil))
+              ((symbol-function 'ashub-native-state-for-session)
+               (lambda (_session) (ert-fail "Stale state must not be rendered"))))
+      (should (equal (ashub--row-status session) "")))))
+
+(ert-deftest ashub-native-row-dsh-does-not-show-per-session-runtime-hints ()
+  (ashub-native-test-state
+    (setf (ashub-session-agent session) 'dsh)
+    (cl-letf (((symbol-function 'ashub-native-fresh-p)
+               (lambda (_agent) (ert-fail "DSH rows must not interpret Host activity")))
+              ((symbol-function 'ashub-native-state-for-session)
+               (lambda (_session) (ert-fail "DSH rows must not interpret Host activity"))))
+      (should (equal (ashub--row-status session) "")))))
+
 (ert-deftest ashub-native-cache-force-cancels-and-rejects-late-callback ()
   (ashub-native-test-state
     (ashub-native-refresh 'pi)
