@@ -3,6 +3,9 @@
 (require 'ashub)
 (require 'emacs-claude)
 (defvar ashub-claude-test-fake (getenv "ASHUB_CLAUDE_FAKE"))
+(defconst ashub-claude-cold-child
+  (expand-file-name "native-claude-cold-child.el"
+                    (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest ashub-native-claude-creation-starts-distinct-native-chats ()
   (let* ((tmp (file-name-as-directory (file-truename (make-temp-file "/tmp/ashub-create-claude-" t))))
@@ -69,6 +72,21 @@
           (should (emacs-claude-session-running-p id))
           (should-not (ashub--live-buffer-for-session session))
           (should (ashub--session-open-p session))
+          ;; A separate -Q Emacs has no client feature, functions or chat buffers.
+          (let ((process-environment (copy-sequence process-environment)))
+            (setenv "ASHUB_COLD_HOLDER_ROOT" emacs-claude-directory)
+            (setenv "ASHUB_COLD_CONFIG_ROOT" emacs-claude-config-directory)
+            (setenv "ASHUB_COLD_ID" id)
+            (with-temp-buffer
+              (should
+               (zerop
+                (call-process
+                 (expand-file-name invocation-name invocation-directory) nil (current-buffer) nil
+                 "--batch" "-Q" "-L" (file-name-directory (locate-library "ashub"))
+                 "-L" (file-name-directory (locate-library "emacs-claude"))
+                 "-L" (file-name-directory (locate-library "markdown-mode"))
+                 "--eval" "(setq load-prefer-newer t)" "-l" ashub-claude-cold-child)))
+              (should (string-match-p "PASS cold Emacs" (buffer-string)))))
           (ashub-open-session session)
           (should (equal pid (emacs-claude--pid id)))
           (should (eq (ashub--live-buffer-for-session session) buffer))

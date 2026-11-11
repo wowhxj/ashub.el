@@ -140,7 +140,10 @@ Failed/unavailable clients never start a backend or silently imply absence."
 (defun ashub-native-refresh-sources (sources &optional force)
   "Refresh only native agents represented by SOURCES; never start a backend."
   (dolist (agent (delete-dups (mapcar (lambda (source) (plist-get source :agent)) sources)))
-    (when (memq agent '(pi dsh)) (ashub-native-refresh agent force))))
+    (pcase agent
+      ;; After a cold Emacs start, holder queries must not depend on opening a chat first.
+      ('claude (ignore-errors (require 'emacs-claude nil t)))
+      ((or 'pi 'dsh) (ashub-native-refresh agent force)))))
 
 (defun ashub-native--within (file directory)
   "Compare normalized FILE and DIRECTORY lexically, with no filesystem IO."

@@ -82,6 +82,21 @@
                (lambda (_session) (ert-fail "DSH rows must not interpret Host activity"))))
       (should (equal (ashub--row-status session) "")))))
 
+(ert-deftest ashub-native-refresh-loads-optional-claude-client-once ()
+  (let (loaded refreshed)
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &rest _) (push feature loaded) t))
+              ((symbol-function 'ashub-native-refresh)
+               (lambda (agent &optional _) (push agent refreshed))))
+      (ashub-native-refresh-sources '((:agent claude) (:agent claude) (:agent pi)))
+      (should (equal loaded '(emacs-claude)))
+      (should (equal refreshed '(pi)))
+      (setq loaded nil)
+      (ashub-native-refresh-sources '((:agent pi) (:agent dsh)))
+      (should-not loaded)
+      (cl-letf (((symbol-function 'require) (lambda (&rest _) (error "Optional client unavailable"))))
+        (should-not (ashub-native-refresh-sources '((:agent claude))))))))
+
 (ert-deftest ashub-native-cache-force-cancels-and-rejects-late-callback ()
   (ashub-native-test-state
     (ashub-native-refresh 'pi)
